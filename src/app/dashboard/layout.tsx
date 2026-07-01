@@ -1,36 +1,32 @@
-import Link from "next/link";
-import SignOutButton from "@/components/SignOutButton";
+import { AppSidebar } from "@/components/app-sidebar"
+import { SiteHeader } from "@/components/site-header"
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 
 export default function DashboardLayout({
   children,
 }: {
-  children: React.ReactNode;
+  children: React.ReactNode
 }) {
   return (
-    <div className="min-h-screen bg-slate-50">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-5xl items-center justify-between px-4 py-3">
-          <Link href="/dashboard" className="font-semibold text-slate-900">
-            Gastos Casa
-          </Link>
-          <nav className="flex items-center gap-5 text-sm text-slate-600">
-            <Link href="/dashboard" className="hover:text-slate-900">
-              Movimientos
-            </Link>
-            <Link href="/dashboard/nueva" className="hover:text-slate-900">
-              Añadir
-            </Link>
-            <Link href="/dashboard/importar" className="hover:text-slate-900">
-              Importar CSV
-            </Link>
-            <Link href="/dashboard/reportes" className="hover:text-slate-900">
-              Reportes
-            </Link>
-            <SignOutButton />
-          </nav>
+    <SidebarProvider
+      style={
+        {
+          "--sidebar-width": "calc(var(--spacing) * 72)",
+          "--header-height": "calc(var(--spacing) * 12)",
+        } as React.CSSProperties
+      }
+    >
+      <AppSidebar variant="inset" />
+      <SidebarInset>
+        <SiteHeader />
+        <div className="flex flex-1 flex-col">
+          <div className="@container/main flex flex-1 flex-col gap-2">
+            <div className="flex flex-col gap-4 py-4 md:gap-6 md:py-6 px-4 lg:px-6">
+              {children}
+            </div>
+          </div>
         </div>
-      </header>
-      <main className="mx-auto max-w-5xl px-4 py-6">{children}</main>
-    </div>
-  );
+      </SidebarInset>
+    </SidebarProvider>
+  )
 }
