@@ -160,7 +160,7 @@ export default function NewTransactionPage() {
         }
       }
 
-      router.push("/dashboard");
+      router.push("/transactions");
       router.refresh();
     } finally {
       setSaving(false);

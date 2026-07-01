@@ -36,12 +36,12 @@ const data = {
     },
     {
       title: "Importar CSV",
-      url: "/dashboard/import",
+      url: "/transactions/import",
       icon: <UploadIcon />,
     },
     {
       title: "Reportes",
-      url: "/dashboard/reports",
+      url: "/transactions/reports",
       icon: <ChartBarIcon />,
     },
   ],
@@ -66,7 +66,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
-        <NavMain items={data.navMain} quickCreateUrl="/dashboard/new" quickCreateIcon={<PlusCircleIcon />} />
+        <NavMain items={data.navMain} quickCreateUrl="/transactions/new" quickCreateIcon={<PlusCircleIcon />} />
       </SidebarContent>
       <SidebarFooter>
         <NavUser />

@@ -7,9 +7,9 @@ import { SidebarTrigger } from "@/components/ui/sidebar"
 const TITLES: Record<string, string> = {
   "/dashboard": "Dashboard",
   "/transactions": "Movimientos",
-  "/dashboard/new": "Nuevo movimiento",
-  "/dashboard/import": "Importar CSV",
-  "/dashboard/reports": "Reportes",
+  "/transactions/new": "Nuevo movimiento",
+  "/transactions/import": "Importar CSV",
+  "/transactions/reports": "Reportes",
 }
 
 export function SiteHeader() {
