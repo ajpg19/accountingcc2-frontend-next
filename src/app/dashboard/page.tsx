@@ -68,7 +68,7 @@ export default async function DashboardPage() {
         <div className="flex items-center justify-between border-b px-5 py-3">
           <h2 className="text-sm font-medium text-card-foreground">Últimos movimientos</h2>
           <Button asChild variant="outline" size="sm">
-            <Link href="/dashboard/movimientos">Ver todos</Link>
+            <Link href="/transactions">Ver todos</Link>
           </Button>
         </div>
         <div className="overflow-x-auto">

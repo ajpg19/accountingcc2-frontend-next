@@ -6,10 +6,10 @@ import { SidebarTrigger } from "@/components/ui/sidebar"
 
 const TITLES: Record<string, string> = {
   "/dashboard": "Dashboard",
-  "/dashboard/movimientos": "Movimientos",
-  "/dashboard/nueva": "Nuevo movimiento",
-  "/dashboard/importar": "Importar CSV",
-  "/dashboard/reportes": "Reportes",
+  "/transactions": "Movimientos",
+  "/dashboard/new": "Nuevo movimiento",
+  "/dashboard/import": "Importar CSV",
+  "/dashboard/reports": "Reportes",
 }
 
 export function SiteHeader() {

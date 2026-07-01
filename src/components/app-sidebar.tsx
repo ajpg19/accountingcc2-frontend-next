@@ -31,17 +31,17 @@ const data = {
     },
     {
       title: "Movimientos",
-      url: "/dashboard/movimientos",
+      url: "/transactions",
       icon: <ListIcon />,
     },
     {
       title: "Importar CSV",
-      url: "/dashboard/importar",
+      url: "/dashboard/import",
       icon: <UploadIcon />,
     },
     {
       title: "Reportes",
-      url: "/dashboard/reportes",
+      url: "/dashboard/reports",
       icon: <ChartBarIcon />,
     },
   ],
@@ -66,7 +66,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
-        <NavMain items={data.navMain} quickCreateUrl="/dashboard/nueva" quickCreateIcon={<PlusCircleIcon />} />
+        <NavMain items={data.navMain} quickCreateUrl="/dashboard/new" quickCreateIcon={<PlusCircleIcon />} />
       </SidebarContent>
       <SidebarFooter>
         <NavUser />
