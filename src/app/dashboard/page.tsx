@@ -5,6 +5,10 @@ import { ChartAreaInteractive, type DailyPoint } from "@/components/chart-area-i
 import { Button } from "@/components/ui/button"
 import type { Transaction } from "@/lib/types"
 
+function formatMoney(n: number, currency = "EUR") {
+  return new Intl.NumberFormat("es-ES", { style: "currency", currency }).format(n)
+}
+
 export default async function DashboardPage() {
   const supabase = await createClient()
 
@@ -60,10 +64,62 @@ export default async function DashboardPage() {
 
       <ChartAreaInteractive data={dailySeries} />
 
-      <div className="flex justify-end">
-        <Button asChild variant="outline">
-          <Link href="/dashboard/movimientos">Ver todos los movimientos</Link>
-        </Button>
+      <div className="rounded-xl border bg-card">
+        <div className="flex items-center justify-between border-b px-5 py-3">
+          <h2 className="text-sm font-medium text-card-foreground">Últimos movimientos</h2>
+          <Button asChild variant="outline" size="sm">
+            <Link href="/dashboard/movimientos">Ver todos</Link>
+          </Button>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b text-left text-muted-foreground">
+                <th className="px-5 py-2 font-normal">Fecha</th>
+                <th className="px-5 py-2 font-normal">Descripción</th>
+                <th className="px-5 py-2 font-normal">Categoría</th>
+                <th className="px-5 py-2 font-normal">Persona</th>
+                <th className="px-5 py-2 font-normal text-right">Importe</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="px-5 py-8 text-center text-muted-foreground">
+                    Aún no hay movimientos. Añade el primero.
+                  </td>
+                </tr>
+              )}
+              {rows.slice(0, 5).map((t) => (
+                <tr key={t.id} className="border-b last:border-0">
+                  <td className="px-5 py-2 text-muted-foreground">
+                    {new Date(t.occurred_on).toLocaleDateString("es-ES")}
+                  </td>
+                  <td className="px-5 py-2">{t.description || t.merchant || "—"}</td>
+                  <td className="px-5 py-2">
+                    {t.categories && (
+                      <span
+                        className="rounded-full px-2 py-0.5 text-xs text-white"
+                        style={{ backgroundColor: t.categories.color }}
+                      >
+                        {t.categories.name}
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-5 py-2 text-muted-foreground">{t.members?.name || "—"}</td>
+                  <td
+                    className={`px-5 py-2 text-right font-medium ${
+                      t.type === "expense" ? "text-red-600" : "text-emerald-600"
+                    }`}
+                  >
+                    {t.type === "expense" ? "-" : "+"}
+                    {formatMoney(Number(t.amount), t.currency)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   )
