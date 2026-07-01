@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/sidebar"
 import {
   LayoutDashboardIcon,
+  ListIcon,
   PlusCircleIcon,
   UploadIcon,
   ChartBarIcon,
@@ -24,9 +25,14 @@ import {
 const data = {
   navMain: [
     {
-      title: "Movimientos",
+      title: "Dashboard",
       url: "/dashboard",
       icon: <LayoutDashboardIcon />,
+    },
+    {
+      title: "Movimientos",
+      url: "/dashboard/movimientos",
+      icon: <ListIcon />,
     },
     {
       title: "Importar CSV",
