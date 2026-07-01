@@ -6,7 +6,7 @@ export type Category = {
 
 export type Member = {
   id: string;
-  name: string;
+  name: string | null;
   email: string | null;
   color: string;
 };
@@ -38,6 +38,16 @@ export type ReceiptItem = {
   model?: string;
   category?: string;
   attributes?: Record<string, unknown>;
+};
+
+export type MovementLog = {
+  id: string;
+  transaction_id: string | null;
+  action: "insert" | "update" | "delete";
+  changed_by: string | null;
+  changed_at: string;
+  old_data: Record<string, unknown> | null;
+  new_data: Record<string, unknown> | null;
 };
 
 export type ExtractedReceipt = {

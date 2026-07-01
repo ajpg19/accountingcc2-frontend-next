@@ -12,12 +12,14 @@ function formatMoney(n: number, currency = "EUR") {
 export default async function DashboardPage() {
   const supabase = await createClient()
 
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("transactions")
     .select("*, categories(id, name, color), members(id, name, color)")
     .order("occurred_on", { ascending: false })
     .order("created_at", { ascending: false })
     .limit(200)
+
+  if (error) console.error("Error cargando transacciones:", error)
 
   const rows = (data ?? []) as unknown as Transaction[]
 

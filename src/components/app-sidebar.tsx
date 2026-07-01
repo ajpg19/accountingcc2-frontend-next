@@ -3,6 +3,7 @@
 import * as React from "react"
 
 import { NavMain } from "@/components/nav-main"
+import { NavSecondary } from "@/components/nav-secondary"
 import { NavUser } from "@/components/nav-user"
 import {
   Sidebar,
@@ -17,9 +18,10 @@ import {
   LayoutDashboardIcon,
   ListIcon,
   PlusCircleIcon,
-  UploadIcon,
   ChartBarIcon,
+  HistoryIcon,
   HomeIcon,
+  TagsIcon,
 } from "lucide-react"
 
 const data = {
@@ -35,14 +37,21 @@ const data = {
       icon: <ListIcon />,
     },
     {
-      title: "Importar CSV",
-      url: "/transactions/import",
-      icon: <UploadIcon />,
-    },
-    {
       title: "Reportes",
       url: "/transactions/reports",
       icon: <ChartBarIcon />,
+    },
+    {
+      title: "Historial",
+      url: "/transactions/historial",
+      icon: <HistoryIcon />,
+    },
+  ],
+  navSecondary: [
+    {
+      title: "Nomencladores",
+      url: "/nomenclatures",
+      icon: <TagsIcon />,
     },
   ],
 }
@@ -59,7 +68,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
             >
               <a href="/dashboard">
                 <HomeIcon className="size-5!" />
-                <span className="text-base font-semibold">Gastos Casa</span>
+                <span className="text-base font-semibold">Accounting CC2</span>
               </a>
             </SidebarMenuButton>
           </SidebarMenuItem>
@@ -67,6 +76,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       </SidebarHeader>
       <SidebarContent>
         <NavMain items={data.navMain} quickCreateUrl="/transactions/new" quickCreateIcon={<PlusCircleIcon />} />
+        <NavSecondary items={data.navSecondary} className="mt-auto" />
       </SidebarContent>
       <SidebarFooter>
         <NavUser />

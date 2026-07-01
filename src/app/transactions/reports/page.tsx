@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import ReportsCharts from "@/components/ReportsCharts";
+import { PageHeader } from "@/components/page-header";
 import type { Transaction } from "@/lib/types";
 
 export default async function ReportsPage() {
@@ -55,7 +56,10 @@ export default async function ReportsPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-lg font-semibold text-slate-900">Reportes</h1>
+      <PageHeader
+        title="Reportes"
+        description="Visualiza la evolución de tus gastos e ingresos por mes, categoría y persona."
+      />
       {rows.length === 0 ? (
         <p className="text-sm text-slate-500">
           Aún no hay movimientos suficientes para generar reportes.

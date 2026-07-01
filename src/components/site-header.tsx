@@ -8,13 +8,18 @@ const TITLES: Record<string, string> = {
   "/dashboard": "Dashboard",
   "/transactions": "Movimientos",
   "/transactions/new": "Nuevo movimiento",
-  "/transactions/import": "Importar CSV",
+  "/transactions/import": "Importar movimientos del banco",
   "/transactions/reports": "Reportes",
+  "/transactions/historial": "Historial de movimientos",
+  "/nomenclatures": "Nomencladores",
+  "/nomenclatures/categories": "Nomencladores · Categorías",
+  "/nomenclatures/members": "Nomencladores · Miembros",
+  "/nomenclatures/allowed-emails": "Nomencladores · Emails permitidos",
 }
 
 export function SiteHeader() {
   const pathname = usePathname()
-  const title = TITLES[pathname] || "Gastos Casa"
+  const title = TITLES[pathname] || "Accounting CC2"
 
   return (
     <header className="flex h-(--header-height) shrink-0 items-center gap-2 border-b transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-(--header-height)">

@@ -19,7 +19,9 @@ export async function POST(req: Request) {
   const { data: members } = await supabase.from("members").select("name");
 
   const categoryNames = (categories ?? []).map((c) => c.name);
-  const memberNames = (members ?? []).map((m) => m.name);
+  const memberNames = (members ?? [])
+    .map((m) => m.name)
+    .filter((name): name is string => Boolean(name));
 
   const anthropic = getAnthropicClient();
 

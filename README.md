@@ -1,4 +1,4 @@
-# Gastos Casa
+# Accounting CC2
 
 App para llevar la contabilidad de gastos e ingresos de casa. Cada movimiento
 se asigna a una persona (sin reparto). Incluye lectura de tickets/facturas con
@@ -53,7 +53,7 @@ Abre `http://localhost:3000`.
 ```bash
 git init
 git add .
-git commit -m "Initial commit: Gastos Casa"
+git commit -m "Initial commit: Accounting CC2"
 git branch -M main
 git remote add origin <URL_DE_TU_REPO>
 git push -u origin main

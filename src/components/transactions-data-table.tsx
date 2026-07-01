@@ -253,7 +253,7 @@ export function TransactionsDataTable({
             <SelectItem value="all">Todas las personas</SelectItem>
             {members.map((m) => (
               <SelectItem key={m.id} value={m.id}>
-                {m.name}
+                {m.name || m.email || "Sin nombre"}
               </SelectItem>
             ))}
           </SelectContent>

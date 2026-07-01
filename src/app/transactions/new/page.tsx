@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import ReceiptUploader from "@/components/ReceiptUploader";
+import { PageHeader } from "@/components/page-header";
 import type { Category, ExtractedReceipt, Member } from "@/lib/types";
 
 export default function NewTransactionPage() {
@@ -32,10 +33,15 @@ export default function NewTransactionPage() {
 
   useEffect(() => {
     (async () => {
-      const [{ data: cats }, { data: mems }] = await Promise.all([
+      const [
+        { data: cats, error: catsError },
+        { data: mems, error: memsError },
+      ] = await Promise.all([
         supabase.from("categories").select("*").order("name"),
         supabase.from("members").select("*").order("name"),
       ]);
+      if (catsError) console.error("Error cargando categorías:", catsError);
+      if (memsError) console.error("Error cargando miembros:", memsError);
       setCategories((cats as Category[]) ?? []);
       setMembers((mems as Member[]) ?? []);
     })();
@@ -169,7 +175,10 @@ export default function NewTransactionPage() {
 
   return (
     <div className="max-w-xl space-y-6">
-      <h1 className="text-lg font-semibold text-slate-900">Nuevo movimiento</h1>
+      <PageHeader
+        title="Nuevo movimiento"
+        description="Registra un gasto o ingreso manualmente, o sube una foto del ticket para extraer los datos automáticamente."
+      />
 
       <ReceiptUploader onExtracted={handleExtracted} />
 
@@ -290,7 +299,7 @@ export default function NewTransactionPage() {
             <option value="">Sin asignar</option>
             {members.map((m) => (
               <option key={m.id} value={m.id}>
-                {m.name}
+                {m.name || m.email || "Sin nombre"}
               </option>
             ))}
           </select>

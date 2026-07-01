@@ -1,4 +1,4 @@
--- Gastos Casa - esquema inicial
+-- Accounting CC2 - esquema inicial
 -- Ejecutar en el SQL Editor de tu proyecto Supabase (Dashboard -> SQL Editor -> New query)
 
 -- 1. Emails con acceso permitido (allowlist de login)
