@@ -21,7 +21,8 @@ export type Transaction = {
   occurred_on: string;
   category_id: string | null;
   assigned_member_id: string | null;
-  source: "manual" | "receipt" | "csv";
+  source: "manual" | "receipt" | "csv" | "bank" | "general";
+  entry_ref: string | null;
   created_at: string;
   categories?: Category | null;
   members?: Member | null;

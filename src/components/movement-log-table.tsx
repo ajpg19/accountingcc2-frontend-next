@@ -90,7 +90,7 @@ export function MovementLogTable({
     if (field === "assigned_member_id") return memberById.get(String(value)) || String(value)
     if (field === "amount") return formatMoney(Number(value))
     if (field === "type") return value === "expense" ? "Gasto" : "Ingreso"
-    if (field === "source") return { manual: "Manual", receipt: "Ticket", csv: "CSV" }[String(value)] || String(value)
+    if (field === "source") return { manual: "Manual", receipt: "Ticket", csv: "CSV", bank: "Banco", general: "General" }[String(value)] || String(value)
     return String(value)
   }
 

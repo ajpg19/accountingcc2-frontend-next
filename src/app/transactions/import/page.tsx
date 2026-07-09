@@ -126,9 +126,13 @@ function parseAmount(raw: string): number {
   return parseFloat(s) || 0;
 }
 
+type ImportOrigin = "bank" | "general";
+
 type ImportRow = {
   index: number;
   id?: string;
+  entryRef?: string;
+  duplicate: boolean;
   date: string;
   description: string;
   amount: number;
@@ -153,15 +157,19 @@ export default function ImportCsvPage() {
   const [descCol, setDescCol] = useState("");
   const [amountCol, setAmountCol] = useState("");
   const [idCol, setIdCol] = useState("");
+  const [entryRefCol, setEntryRefCol] = useState("");
   const [categoryCol, setCategoryCol] = useState("");
   const [memberCol, setMemberCol] = useState("");
+  const [origin, setOrigin] = useState<ImportOrigin>("bank");
 
   const [rows, setRows] = useState<ImportRow[]>([]);
   const [step, setStep] = useState<"upload" | "map" | "review">("upload");
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [checkingDuplicates, setCheckingDuplicates] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const isUpdateMode = Boolean(idCol);
+  const isDedupMode = Boolean(entryRefCol) && !isUpdateMode;
 
   useEffect(() => {
     (async () => {
@@ -200,6 +208,7 @@ export default function ImportCsvPage() {
       setDescCol(guessHeader(parsed.headers, ["concepto", "tipo movimiento", "descripcion", "descripción"]));
       setAmountCol(guessHeader(parsed.headers, ["importe", "cantidad"]));
       setIdCol(guessIdColumn(parsed.headers));
+      setEntryRefCol(guessHeader(parsed.headers, ["apunte", "nº apunte", "nro. apunte", "numero de apunte", "número de apunte"]));
       setCategoryCol(guessHeader(parsed.headers, ["categoría", "categoria"]));
       setMemberCol(guessHeader(parsed.headers, ["persona", "miembro"]));
 
@@ -220,6 +229,7 @@ export default function ImportCsvPage() {
     setFileName("");
     setHeaders([]);
     setRawRows([]);
+    setEntryRefCol("");
     setParseError("");
     setStep("upload");
   }
@@ -238,6 +248,8 @@ export default function ImportCsvPage() {
       return {
         index: i,
         id: idCol ? r[idCol] || undefined : undefined,
+        entryRef: entryRefCol ? r[entryRefCol]?.trim() || undefined : undefined,
+        duplicate: false,
         date: r[dateCol] || "",
         description: r[descCol] || "",
         amount: Math.abs(amount),
@@ -247,10 +259,49 @@ export default function ImportCsvPage() {
         include: true,
       };
     });
+
+    // Deduplicación por número de apunte dentro del mismo origen (banco/general).
+    // Los que ya existen en la base de datos se marcan como duplicados y se
+    // desmarcan para no volver a añadirlos.
+    if (isDedupMode) {
+      setCheckingDuplicates(true);
+      try {
+        const refs = Array.from(
+          new Set(parsed.map((r) => r.entryRef).filter((v): v is string => Boolean(v)))
+        );
+        const existing = new Set<string>();
+        const chunkSize = 200;
+        for (let i = 0; i < refs.length; i += chunkSize) {
+          const chunk = refs.slice(i, i + chunkSize);
+          const { data } = await supabase
+            .from("transactions")
+            .select("entry_ref")
+            .eq("source", origin)
+            .in("entry_ref", chunk);
+          (data ?? []).forEach((d: { entry_ref: string | null }) => {
+            if (d.entry_ref) existing.add(d.entry_ref);
+          });
+        }
+        // Marca también duplicados dentro del propio archivo (mismo apunte repetido).
+        const seen = new Set<string>();
+        for (const row of parsed) {
+          if (!row.entryRef) continue;
+          if (existing.has(row.entryRef) || seen.has(row.entryRef)) {
+            row.duplicate = true;
+            row.include = false;
+          } else {
+            seen.add(row.entryRef);
+          }
+        }
+      } finally {
+        setCheckingDuplicates(false);
+      }
+    }
+
     setRows(parsed);
     setStep("review");
 
-    const needsSuggestion = parsed.filter((r) => !r.categoryId || !r.memberId);
+    const needsSuggestion = parsed.filter((r) => r.include && (!r.categoryId || !r.memberId));
     if (!needsSuggestion.length) return;
 
     setLoadingSuggestions(true);
@@ -329,19 +380,31 @@ export default function ImportCsvPage() {
       }
 
       if (toInsert.length) {
-        await supabase.from("transactions").insert(
-          toInsert.map((r) => ({
-            type: r.type,
-            amount: r.amount,
-            description: r.description,
-            occurred_on: normalizeDate(r.date),
-            category_id: r.categoryId || null,
-            assigned_member_id: r.memberId || null,
-            source: "csv" as const,
-            raw_import_row: rawRows[r.index],
-            created_by: user?.email,
-          }))
-        );
+        const payload = toInsert.map((r) => ({
+          type: r.type,
+          amount: r.amount,
+          description: r.description,
+          occurred_on: normalizeDate(r.date),
+          category_id: r.categoryId || null,
+          assigned_member_id: r.memberId || null,
+          source: isDedupMode ? origin : ("csv" as const),
+          entry_ref: r.entryRef || null,
+          raw_import_row: rawRows[r.index],
+          created_by: user?.email,
+        }));
+
+        if (isDedupMode) {
+          // Red de seguridad: si otro apunte se coló entre medias, el índice
+          // único (source, entry_ref) lo ignora en vez de fallar.
+          await supabase
+            .from("transactions")
+            .upsert(payload, {
+              onConflict: "source,entry_ref",
+              ignoreDuplicates: true,
+            });
+        } else {
+          await supabase.from("transactions").insert(payload);
+        }
       }
 
       await supabase.from("csv_imports").insert({
@@ -350,12 +413,13 @@ export default function ImportCsvPage() {
         row_count: included.length,
       });
 
+      const skippedNote = duplicateCount ? ` (${duplicateCount} duplicado(s) ignorados)` : "";
       toast.success(
         toUpdate.length && toInsert.length
           ? `${toInsert.length} movimiento(s) añadidos y ${toUpdate.length} actualizados.`
           : toUpdate.length
           ? `${toUpdate.length} movimiento(s) actualizados.`
-          : `${toInsert.length} movimiento(s) importados.`
+          : `${toInsert.length} movimiento(s) importados.${skippedNote}`
       );
 
       setStep("upload");
@@ -373,12 +437,13 @@ export default function ImportCsvPage() {
   const includedCount = rows.filter((r) => r.include).length;
   const updateCount = rows.filter((r) => r.include && r.id).length;
   const insertCount = includedCount - updateCount;
+  const duplicateCount = rows.filter((r) => r.duplicate).length;
 
   return (
     <div className="max-w-3xl space-y-6">
       <PageHeader
-        title="Importar movimientos del banco"
-        description="Sube el extracto de tu banco (CSV o Excel) para añadir movimientos nuevos, o vuelve a subir un archivo descargado desde Movimientos para actualizarlos."
+        title="Importar movimientos"
+        description="Sube movimientos del banco o generales (CSV o Excel). Los que ya existan según su nº de apunte se ignoran automáticamente. También puedes volver a subir un archivo exportado desde Movimientos para actualizarlos."
       />
 
       {step === "upload" && (
@@ -459,6 +524,38 @@ export default function ImportCsvPage() {
               las filas sin ID se añadirán como nuevas.
             </p>
           )}
+          {!isUpdateMode && (
+            <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <label className="text-xs font-medium text-slate-600">Origen de este archivo</label>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setOrigin("bank")}
+                  className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium ${
+                    origin === "bank"
+                      ? "border-slate-900 bg-white text-slate-900"
+                      : "border-slate-200 bg-white text-slate-500"
+                  }`}
+                >
+                  Movimientos del banco
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOrigin("general")}
+                  className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium ${
+                    origin === "general"
+                      ? "border-slate-900 bg-white text-slate-900"
+                      : "border-slate-200 bg-white text-slate-500"
+                  }`}
+                >
+                  Movimientos generales
+                </button>
+              </div>
+              <p className="text-xs text-slate-500">
+                Los movimientos cuyo nº de apunte ya exista en este origen se ignorarán automáticamente.
+              </p>
+            </div>
+          )}
           <div className="grid grid-cols-3 gap-3">
             <div>
               <label className="text-xs text-slate-500">Columna de fecha</label>
@@ -507,6 +604,25 @@ export default function ImportCsvPage() {
                 ))}
               </select>
             </div>
+            {!isUpdateMode && (
+              <div>
+                <label className="text-xs text-slate-500">
+                  Columna de nº apunte (para no duplicar)
+                </label>
+                <select
+                  value={entryRefCol}
+                  onChange={(e) => setEntryRefCol(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm"
+                >
+                  <option value="">-</option>
+                  {headers.map((h) => (
+                    <option key={h} value={h}>
+                      {h}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
           <button
             disabled={!dateCol || !descCol || !amountCol}
@@ -520,6 +636,17 @@ export default function ImportCsvPage() {
 
       {step === "review" && (
         <div className="space-y-4">
+          {isDedupMode && (
+            <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">
+              Origen: <strong>{origin === "bank" ? "Movimientos del banco" : "Movimientos generales"}</strong>.
+              {duplicateCount > 0
+                ? ` ${duplicateCount} movimiento(s) ya existentes se ignorarán.`
+                : " No se han encontrado duplicados."}
+            </p>
+          )}
+          {checkingDuplicates && (
+            <p className="text-sm text-slate-500">Comprobando movimientos ya existentes...</p>
+          )}
           {loadingSuggestions && (
             <p className="text-sm text-slate-500">
               Claude está sugiriendo categoría y persona para cada fila...
@@ -530,7 +657,9 @@ export default function ImportCsvPage() {
               <thead>
                 <tr className="border-b border-slate-100 text-left text-slate-500">
                   <th className="px-3 py-2 font-normal"></th>
-                  {isUpdateMode && <th className="px-3 py-2 font-normal">Estado</th>}
+                  {(isUpdateMode || isDedupMode) && (
+                    <th className="px-3 py-2 font-normal">Estado</th>
+                  )}
                   <th className="px-3 py-2 font-normal">Fecha</th>
                   <th className="px-3 py-2 font-normal">Concepto</th>
                   <th className="px-3 py-2 font-normal">Importe</th>
@@ -540,7 +669,12 @@ export default function ImportCsvPage() {
               </thead>
               <tbody>
                 {rows.map((r) => (
-                  <tr key={r.index} className="border-b border-slate-50">
+                  <tr
+                    key={r.index}
+                    className={`border-b border-slate-50 ${
+                      r.duplicate ? "opacity-50" : ""
+                    }`}
+                  >
                     <td className="px-3 py-1.5">
                       <input
                         type="checkbox"
@@ -550,16 +684,18 @@ export default function ImportCsvPage() {
                         }
                       />
                     </td>
-                    {isUpdateMode && (
+                    {(isUpdateMode || isDedupMode) && (
                       <td className="px-3 py-1.5">
                         <span
                           className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                            r.id
+                            r.duplicate
+                              ? "bg-slate-100 text-slate-500"
+                              : r.id
                               ? "bg-amber-50 text-amber-700"
-                              : "bg-slate-100 text-slate-600"
+                              : "bg-emerald-50 text-emerald-700"
                           }`}
                         >
-                          {r.id ? "Actualizar" : "Nuevo"}
+                          {r.duplicate ? "Ya existe" : r.id ? "Actualizar" : "Nuevo"}
                         </span>
                       </td>
                     )}
@@ -619,6 +755,10 @@ export default function ImportCsvPage() {
               ? "Guardando..."
               : isUpdateMode
               ? `Guardar (${insertCount} nuevos, ${updateCount} actualizados)`
+              : isDedupMode
+              ? `Importar ${includedCount} nuevos${
+                  duplicateCount ? ` (${duplicateCount} ignorados)` : ""
+                }`
               : `Importar ${includedCount} movimientos`}
           </button>
         </div>

@@ -40,3 +40,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 _delete_me/
+
+# JetBrains IDE
+.idea/

@@ -14,6 +14,7 @@ import {
 
 import { createClient } from "@/lib/supabase/client"
 import type { Category, Member, Transaction } from "@/lib/types"
+import { EditTransactionSheet } from "@/components/edit-transaction-sheet"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -55,7 +56,11 @@ const SOURCE_LABELS: Record<Transaction["source"], string> = {
   manual: "Manual",
   receipt: "Ticket",
   csv: "CSV",
+  bank: "Banco",
+  general: "General",
 }
+
+const ADMIN_EMAIL = "ajpg19@gmail.com"
 
 export function TransactionsDataTable({
   data: initialData,
@@ -74,8 +79,27 @@ export function TransactionsDataTable({
   const [typeFilter, setTypeFilter] = React.useState<string>("all")
   const [categoryFilter, setCategoryFilter] = React.useState<string>("all")
   const [memberFilter, setMemberFilter] = React.useState<string>("all")
+  const [editing, setEditing] = React.useState<Transaction | null>(null)
+  const [editOpen, setEditOpen] = React.useState(false)
+  const [isAdmin, setIsAdmin] = React.useState(false)
 
   React.useEffect(() => setData(initialData), [initialData])
+
+  React.useEffect(() => {
+    const supabase = createClient()
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      setIsAdmin(user?.email === ADMIN_EMAIL)
+    })
+  }, [])
+
+  function handleEdit(transaction: Transaction) {
+    setEditing(transaction)
+    setEditOpen(true)
+  }
+
+  function handleSaved(updated: Transaction) {
+    setData((prev) => prev.map((t) => (t.id === updated.id ? updated : t)))
+  }
 
   async function handleDelete(id: string) {
     if (!confirm("¿Eliminar este movimiento? Esta acción no se puede deshacer.")) return
@@ -174,30 +198,37 @@ export function TransactionsDataTable({
           </div>
         ),
       },
-      {
-        id: "actions",
-        header: () => <span className="sr-only">Acciones</span>,
-        cell: ({ row }) => (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="size-8">
-                <EllipsisVerticalIcon />
-                <span className="sr-only">Abrir menú</span>
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                variant="destructive"
-                onClick={() => handleDelete(row.original.id)}
-              >
-                Eliminar
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ),
-      },
+      ...(isAdmin
+        ? [
+            {
+              id: "actions",
+              header: () => <span className="sr-only">Acciones</span>,
+              cell: ({ row }) => (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon" className="size-8">
+                      <EllipsisVerticalIcon />
+                      <span className="sr-only">Abrir menú</span>
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onClick={() => handleEdit(row.original)}>
+                      Editar
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      variant="destructive"
+                      onClick={() => handleDelete(row.original.id)}
+                    >
+                      Eliminar
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              ),
+            } as ColumnDef<Transaction>,
+          ]
+        : []),
     ],
-    []
+    [isAdmin]
   )
 
   const table = useReactTable({
@@ -344,6 +375,15 @@ export function TransactionsDataTable({
           </Button>
         </div>
       </div>
+
+      <EditTransactionSheet
+        transaction={editing}
+        categories={categories}
+        members={members}
+        open={editOpen}
+        onOpenChange={setEditOpen}
+        onSaved={handleSaved}
+      />
     </div>
   )
 }
