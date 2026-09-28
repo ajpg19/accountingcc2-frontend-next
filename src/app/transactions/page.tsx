@@ -1,3 +1,4 @@
+import { Suspense } from "react"
 import Link from "next/link"
 import { UploadIcon } from "lucide-react"
 import { createClient } from "@/lib/supabase/server"
@@ -5,10 +6,16 @@ import { TransactionsDataTable } from "@/components/transactions-data-table"
 import { ExportTransactionsButton } from "@/components/export-transactions-button"
 import { PageHeader } from "@/components/page-header"
 import { Button } from "@/components/ui/button"
+import { isAdminEmail } from "@/lib/admin"
 import type { Category, Member, Transaction } from "@/lib/types"
 
 export default async function TransactionsPage() {
   const supabase = await createClient()
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  const isAdmin = isAdminEmail(user?.email)
 
   const [
     { data: transactions, error: txError },
@@ -38,20 +45,24 @@ export default async function TransactionsPage() {
         actions={
           <>
             <ExportTransactionsButton data={rows} />
-            <Button asChild variant="outline" size="sm">
-              <Link href="/transactions/import">
-                <UploadIcon />
-                Importar movimientos del banco
-              </Link>
-            </Button>
+            {isAdmin && (
+              <Button asChild variant="outline" size="sm">
+                <Link href="/transactions/import">
+                  <UploadIcon />
+                  Importar movimientos
+                </Link>
+              </Button>
+            )}
           </>
         }
       />
-      <TransactionsDataTable
-        data={rows}
-        categories={(categories ?? []) as Category[]}
-        members={(members ?? []) as Member[]}
-      />
+      <Suspense fallback={null}>
+        <TransactionsDataTable
+          data={rows}
+          categories={(categories ?? []) as Category[]}
+          members={(members ?? []) as Member[]}
+        />
+      </Suspense>
     </div>
   )
 }

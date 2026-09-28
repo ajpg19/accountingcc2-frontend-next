@@ -6,6 +6,7 @@ export default function CategoriesNomenclaturePage() {
       table="categories"
       usageColumn="category_id"
       label="categoría"
+      withKeywords
     />
   );
 }

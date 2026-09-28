@@ -7,7 +7,9 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import ReceiptUploader from "@/components/ReceiptUploader";
 import { PageHeader } from "@/components/page-header";
-import { matchCategoryId } from "@/lib/category-rules";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -15,36 +17,36 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { matchCategoryId } from "@/lib/category-rules";
 import type { Category, ExtractedReceipt, Member } from "@/lib/types";
 
-// Radix Select forbids an empty-string item value, so the "no selection"
-// option uses this sentinel while state keeps "" for none.
 const NONE = "__none__";
 
-export default function NewTransactionPage() {
+// Dedicated form for "directos": expenses someone paid out of pocket. Manual
+// entry is ALWAYS a directo — regular bank movements are imported from Excel.
+// Each directo is saved as a linked pair sharing a group_id:
+//   * the expense (the real spending, categorized), and
+//   * that person's income / contribution ("aportación") to the shared pot.
+export default function NewDirectoPage() {
   const router = useRouter();
   const supabase = createClient();
 
   const [categories, setCategories] = useState<Category[]>([]);
   const [members, setMembers] = useState<Member[]>([]);
 
-  const [type, setType] = useState<"expense" | "income">("expense");
   const [amount, setAmount] = useState("");
   const [description, setDescription] = useState("");
   const [merchant, setMerchant] = useState("");
   const [occurredOn, setOccurredOn] = useState(
     new Date().toISOString().slice(0, 10)
   );
-  const [categoryId, setCategoryId] = useState("");
+  const [categoryId, setCategoryId] = useState(NONE);
   const [memberId, setMemberId] = useState("");
   const [notes, setNotes] = useState("");
   const [extracted, setExtracted] = useState<ExtractedReceipt | null>(null);
   const [receiptFile, setReceiptFile] = useState<File | null>(null);
   const [saving, setSaving] = useState(false);
   const [suggesting, setSuggesting] = useState(false);
-  // "Direct payment": an expense someone paid out of pocket. Saved as a linked
-  // pair (expense + that person's income/aportación) sharing a group_id.
-  const [directPayment, setDirectPayment] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -74,7 +76,6 @@ export default function NewTransactionPage() {
         ? `${data.line_items.length} artículo(s) - ${data.merchant}`
         : data.merchant || ""
     );
-    setType("expense");
     suggestCategory(data.merchant, data.line_items?.[0]?.description);
   }
 
@@ -98,7 +99,7 @@ export default function NewTransactionPage() {
           merchant: merchantVal,
           description: descVal,
           amount: Number(amount) || undefined,
-          type,
+          type: "expense",
         }),
       });
       if (res.ok) {
@@ -113,85 +114,58 @@ export default function NewTransactionPage() {
     }
   }
 
-  // A direct payment only applies to expenses and needs to know who paid.
-  const isDirectPayment = type === "expense" && directPayment;
-
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (isDirectPayment && !memberId) return;
+    // A directo always needs to know who paid it out of pocket.
+    if (!memberId) return;
     setSaving(true);
     try {
       const {
         data: { user },
       } = await supabase.auth.getUser();
 
-      let tx: { id: string } | null = null;
-
-      if (isDirectPayment) {
-        // Two linked rows: the expense (money out, categorized) and the
-        // contribution (money in, attributed to the person who paid).
-        const groupId = crypto.randomUUID();
-        const incomeCategoryId =
-          categories.find((c) => c.name.toLowerCase() === "ingreso")?.id ?? null;
-        const label = description || merchant || "pago directo";
-        const { data: inserted, error } = await supabase
-          .from("transactions")
-          .insert([
-            {
-              type: "expense",
-              amount: Number(amount),
-              description,
-              merchant,
-              occurred_on: occurredOn,
-              category_id: categoryId || null,
-              // The expense belongs to the shared pot, not to a person.
-              assigned_member_id: null,
-              source: extracted ? "receipt" : "manual",
-              group_id: groupId,
-              notes: notes.trim() || null,
-              created_by: user?.email,
-            },
-            {
-              type: "income",
-              amount: Number(amount),
-              description: `Aportación · ${label}`,
-              merchant,
-              occurred_on: occurredOn,
-              category_id: incomeCategoryId,
-              assigned_member_id: memberId,
-              source: "manual",
-              group_id: groupId,
-              created_by: user?.email,
-            },
-          ])
-          .select("id, type");
-
-        if (error || !inserted) throw error;
-        // Any receipt is attached to the expense row.
-        tx = inserted.find((r) => r.type === "expense") ?? null;
-      } else {
-        const { data, error } = await supabase
-          .from("transactions")
-          .insert({
-            type,
+      // Two linked rows: the expense (money out, categorized) and the
+      // contribution (money in, attributed to the person who paid).
+      const groupId = crypto.randomUUID();
+      const incomeCategoryId =
+        categories.find((c) => c.name.toLowerCase() === "ingreso")?.id ?? null;
+      const label = description || merchant || "pago directo";
+      const { data: inserted, error } = await supabase
+        .from("transactions")
+        .insert([
+          {
+            type: "expense",
             amount: Number(amount),
             description,
             merchant,
             occurred_on: occurredOn,
-            category_id: categoryId || null,
-            assigned_member_id: memberId || null,
+            category_id: categoryId === NONE ? null : categoryId,
+            // The expense belongs to the shared pot, not to a person.
+            assigned_member_id: null,
             source: extracted ? "receipt" : "manual",
+            group_id: groupId,
             notes: notes.trim() || null,
             created_by: user?.email,
-          })
-          .select()
-          .single();
+          },
+          {
+            type: "income",
+            amount: Number(amount),
+            description: `Aportación · ${label}`,
+            merchant,
+            occurred_on: occurredOn,
+            category_id: incomeCategoryId,
+            assigned_member_id: memberId,
+            source: "manual",
+            group_id: groupId,
+            created_by: user?.email,
+          },
+        ])
+        .select("id, type");
 
-        if (error || !data) throw error;
-        tx = data;
-      }
-
-      if (!tx) throw new Error("No se pudo crear el movimiento.");
+      if (error || !inserted) throw error;
+      // Any receipt is attached to the expense row.
+      const tx = inserted.find((r) => r.type === "expense") ?? null;
+      if (!tx) throw new Error("No se pudo crear el directo.");
 
       if (extracted && receiptFile) {
         const path = `${tx.id}/${receiptFile.name}`;
@@ -241,18 +215,18 @@ export default function NewTransactionPage() {
   return (
     <div className="max-w-xl space-y-6">
       <PageHeader
-        title="Nuevo movimiento"
-        description="Registra un gasto o ingreso manualmente, o sube una foto del ticket para extraer los datos automáticamente."
+        title="Nuevo directo"
+        description="Registra un gasto que alguien pagó de su bolsillo. Se guarda como gasto del bote y, a la vez, como aportación de esa persona. Los movimientos del banco se importan desde el Excel."
       />
 
       <ReceiptUploader onExtracted={handleExtracted} />
 
       {extracted && extracted.line_items?.length > 0 && (
-        <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm">
-          <p className="mb-2 font-medium text-slate-700">
+        <div className="rounded-lg border bg-card p-4 text-sm">
+          <p className="mb-2 font-medium text-foreground">
             Detectado en el ticket ({extracted.line_items.length} artículo(s)):
           </p>
-          <ul className="space-y-1 text-slate-600">
+          <ul className="space-y-1 text-muted-foreground">
             {extracted.line_items.map((item, i) => (
               <li key={i}>
                 {item.quantity ?? 1}x {item.description}
@@ -267,111 +241,97 @@ export default function NewTransactionPage() {
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="space-y-4 rounded-xl border border-slate-200 bg-white p-5">
-        <div className="flex gap-3">
-          <button
-            type="button"
-            onClick={() => setType("expense")}
-            className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium ${
-              type === "expense"
-                ? "border-red-300 bg-red-50 text-red-700"
-                : "border-slate-200 text-slate-500"
-            }`}
-          >
-            Gasto
-          </button>
-          <button
-            type="button"
-            onClick={() => setType("income")}
-            className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium ${
-              type === "income"
-                ? "border-emerald-300 bg-emerald-50 text-emerald-700"
-                : "border-slate-200 text-slate-500"
-            }`}
-          >
-            Ingreso
-          </button>
+      <form
+        onSubmit={handleSubmit}
+        className="space-y-4 rounded-xl border bg-card p-5"
+      >
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          Este movimiento se registra por partida doble: un <strong>gasto</strong> del
+          bote común y la <strong>aportación</strong> de quien lo pagó.
         </div>
 
-        {type === "expense" && (
-          <label className="flex items-start gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-            <input
-              type="checkbox"
-              checked={directPayment}
-              onChange={(e) => setDirectPayment(e.target.checked)}
-              className="mt-0.5"
-            />
-            <span>
-              Lo pagó una persona de su bolsillo
-              <span className="block text-xs text-slate-500">
-                Se registra también como su aportación al bote común.
-              </span>
-            </span>
-          </label>
-        )}
-
         <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="text-xs text-slate-500">Importe (€)</label>
-            <input
+          <div className="space-y-1.5">
+            <Label htmlFor="directo-amount">
+              Importe (€) <span className="text-red-500">*</span>
+            </Label>
+            <Input
+              id="directo-amount"
               required
               type="number"
               step="0.01"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
             />
           </div>
-          <div>
-            <label className="text-xs text-slate-500">Fecha</label>
-            <input
+          <div className="space-y-1.5">
+            <Label htmlFor="directo-date">
+              Fecha <span className="text-red-500">*</span>
+            </Label>
+            <Input
+              id="directo-date"
               required
               type="date"
               value={occurredOn}
               onChange={(e) => setOccurredOn(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
             />
           </div>
         </div>
 
-        <div>
-          <label className="text-xs text-slate-500">Comercio / origen</label>
-          <input
-            value={merchant}
-            onChange={(e) => setMerchant(e.target.value)}
-            className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-          />
-        </div>
-
-        <div>
-          <label className="text-xs text-slate-500">Descripción</label>
-          <input
+        <div className="space-y-1.5">
+          <Label htmlFor="directo-description">
+            Descripción <span className="text-red-500">*</span>
+          </Label>
+          <Input
+            id="directo-description"
+            required
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            onBlur={() => !categoryId && suggestCategory(merchant, description)}
-            className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            onBlur={() =>
+              categoryId === NONE && suggestCategory(merchant, description)
+            }
           />
         </div>
 
-        <div>
-          <label className="text-xs text-slate-500">Observaciones</label>
+        <div className="space-y-1.5">
+          <Label htmlFor="directo-merchant">
+            Comercio / origen{" "}
+            <span className="font-normal text-muted-foreground">(opcional)</span>
+          </Label>
+          <Input
+            id="directo-merchant"
+            value={merchant}
+            onChange={(e) => setMerchant(e.target.value)}
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <Label htmlFor="directo-notes">
+            Observaciones{" "}
+            <span className="font-normal text-muted-foreground">(opcional)</span>
+          </Label>
           <textarea
+            id="directo-notes"
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
             rows={3}
-            className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            className="w-full rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
           />
         </div>
 
-        <div>
-          <label className="text-xs text-slate-500">
-            Categoría {suggesting && "(sugiriendo con Claude...)"}
-          </label>
-          <Select
-            value={categoryId || NONE}
-            onValueChange={(v) => setCategoryId(v === NONE ? "" : v)}
-          >
-            <SelectTrigger className="mt-1 w-full">
+        <div className="space-y-1.5">
+          <Label>
+            Categoría{" "}
+            {suggesting ? (
+              <span className="font-normal text-muted-foreground">
+                (sugiriendo con Claude...)
+              </span>
+            ) : (
+              <span className="font-normal text-muted-foreground">(opcional)</span>
+            )}
+          </Label>
+          <Select value={categoryId} onValueChange={setCategoryId}>
+            <SelectTrigger className="w-full">
               <SelectValue placeholder="Sin categoría" />
             </SelectTrigger>
             <SelectContent>
@@ -385,19 +345,15 @@ export default function NewTransactionPage() {
           </Select>
         </div>
 
-        <div>
-          <label className="text-xs text-slate-500">
-            {isDirectPayment ? "Aportado por *" : "Asignado a"}
-          </label>
-          <Select
-            value={memberId || NONE}
-            onValueChange={(v) => setMemberId(v === NONE ? "" : v)}
-          >
-            <SelectTrigger className="mt-1 w-full">
-              <SelectValue placeholder="Sin asignar" />
+        <div className="space-y-1.5">
+          <Label>
+            Lo pagó <span className="text-red-500">*</span>
+          </Label>
+          <Select value={memberId} onValueChange={setMemberId}>
+            <SelectTrigger className="w-full">
+              <SelectValue placeholder="Selecciona una persona" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value={NONE}>Sin asignar</SelectItem>
               {members.map((m) => (
                 <SelectItem key={m.id} value={m.id}>
                   {m.name || m.email || "Sin nombre"}
@@ -407,13 +363,13 @@ export default function NewTransactionPage() {
           </Select>
         </div>
 
-        <button
+        <Button
           type="submit"
-          disabled={saving}
-          className="w-full rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-medium text-white disabled:opacity-60"
+          disabled={saving || !memberId}
+          className="w-full"
         >
-          {saving ? "Guardando..." : "Guardar movimiento"}
-        </button>
+          {saving ? "Guardando..." : "Guardar directo"}
+        </Button>
       </form>
     </div>
   );

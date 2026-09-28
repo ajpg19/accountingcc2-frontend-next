@@ -14,16 +14,22 @@ import {
 } from "@/components/ui/table";
 import { PlusIcon, Trash2Icon, Loader2Icon } from "lucide-react";
 import { toast } from "sonner";
+import { KeywordsInput } from "@/components/nomenclatures/keywords-input";
 
 type Item = {
   id: string;
   name: string | null;
   color: string;
   email?: string | null;
+  keywords?: string[];
 };
 
 function byName(a: Item, b: Item) {
   return (a.name ?? "").localeCompare(b.name ?? "");
+}
+
+function keywordsEqual(a: string[] = [], b: string[] = []) {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
 export function NomenclatorManager({
@@ -31,6 +37,7 @@ export function NomenclatorManager({
   usageColumn,
   label,
   withEmail = false,
+  withKeywords = false,
 }: {
   /** Nombre de la tabla en Supabase: "categories" o "members" */
   table: "categories" | "members";
@@ -40,6 +47,8 @@ export function NomenclatorManager({
   label: string;
   /** Si true, muestra también un campo de email (para miembros) */
   withEmail?: boolean;
+  /** Si true, muestra un campo de palabras clave (para categorías) */
+  withKeywords?: boolean;
 }) {
   const supabase = createClient();
 
@@ -53,6 +62,7 @@ export function NomenclatorManager({
   const [newName, setNewName] = useState("");
   const [newColor, setNewColor] = useState("#94a3b8");
   const [newEmail, setNewEmail] = useState("");
+  const [newKeywords, setNewKeywords] = useState<string[]>([]);
   const [creating, setCreating] = useState(false);
 
   const [drafts, setDrafts] = useState<Record<string, Item>>({});
@@ -109,7 +119,8 @@ export function NomenclatorManager({
     return (
       d.name !== item.name ||
       d.color !== item.color ||
-      (withEmail && d.email !== item.email)
+      (withEmail && d.email !== item.email) ||
+      (withKeywords && !keywordsEqual(d.keywords, item.keywords))
     );
   }
 
@@ -125,6 +136,7 @@ export function NomenclatorManager({
       color: draft.color,
     };
     if (withEmail) payload.email = draft.email || null;
+    if (withKeywords) payload.keywords = draft.keywords ?? [];
 
     const { error } = await supabase.from(table).update(payload).eq("id", item.id);
     setSavingId(null);
@@ -180,6 +192,7 @@ export function NomenclatorManager({
       color: newColor,
     };
     if (withEmail) payload.email = newEmail.trim() || null;
+    if (withKeywords) payload.keywords = newKeywords;
 
     const { data, error } = await supabase
       .from(table)
@@ -197,6 +210,7 @@ export function NomenclatorManager({
     setNewName("");
     setNewColor("#94a3b8");
     setNewEmail("");
+    setNewKeywords([]);
   }
 
   if (loading) {
@@ -239,6 +253,7 @@ export function NomenclatorManager({
                 <TableHead className="w-14">Color</TableHead>
                 <TableHead>Nombre</TableHead>
                 {withEmail && <TableHead>Email</TableHead>}
+                {withKeywords && <TableHead>Palabras clave</TableHead>}
                 <TableHead className="w-28 text-right">Uso</TableHead>
                 <TableHead className="w-40 text-right">Acciones</TableHead>
               </TableRow>
@@ -247,6 +262,8 @@ export function NomenclatorManager({
               {items.map((item) => {
                 const draft = draftFor(item);
                 const dirty = isDirty(item);
+                const usageCount = usage[item.id] ?? 0;
+                const inUse = usageCount > 0;
                 return (
                   <TableRow key={item.id}>
                     <TableCell>
@@ -281,29 +298,44 @@ export function NomenclatorManager({
                         />
                       </TableCell>
                     )}
+                    {withKeywords && (
+                      <TableCell>
+                        <KeywordsInput
+                          value={draft.keywords ?? []}
+                          onChange={(next) =>
+                            updateDraft(item, { keywords: next })
+                          }
+                        />
+                      </TableCell>
+                    )}
                     <TableCell className="text-right text-slate-500">
-                      {usage[item.id] ?? 0}
+                      {usageCount}
                     </TableCell>
                     <TableCell>
                       <div className="flex justify-end gap-2">
-                        <Button
-                          size="sm"
-                          variant={dirty ? "default" : "outline"}
-                          disabled={!dirty || savingId === item.id}
-                          onClick={() => saveItem(item)}
-                        >
-                          {savingId === item.id ? (
-                            <Loader2Icon className="size-3.5 animate-spin" />
-                          ) : (
-                            "Guardar"
-                          )}
-                        </Button>
+                        {dirty && (
+                          <Button
+                            size="sm"
+                            disabled={savingId === item.id}
+                            onClick={() => saveItem(item)}
+                          >
+                            {savingId === item.id ? (
+                              <Loader2Icon className="size-3.5 animate-spin" />
+                            ) : (
+                              "Guardar"
+                            )}
+                          </Button>
+                        )}
                         <Button
                           size="icon-sm"
                           variant="destructive"
-                          disabled={deletingId === item.id}
+                          disabled={inUse || deletingId === item.id}
                           onClick={() => deleteItem(item)}
-                          title="Borrar"
+                          title={
+                            inUse
+                              ? `No se puede borrar: ${usageCount} movimiento(s) la usan`
+                              : "Borrar"
+                          }
                         >
                           {deletingId === item.id ? (
                             <Loader2Icon className="size-3.5 animate-spin" />
@@ -344,6 +376,13 @@ export function NomenclatorManager({
               onChange={(e) => setNewEmail(e.target.value)}
               placeholder="Email (opcional)"
               className="h-8 w-56"
+            />
+          )}
+          {withKeywords && (
+            <KeywordsInput
+              value={newKeywords}
+              onChange={setNewKeywords}
+              className="w-72"
             />
           )}
           <Button size="sm" onClick={createItem} disabled={creating}>

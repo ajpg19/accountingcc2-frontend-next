@@ -18,7 +18,6 @@ import {
   LayoutDashboardIcon,
   ListIcon,
   PlusCircleIcon,
-  ChartBarIcon,
   HistoryIcon,
   HomeIcon,
   TagsIcon,
@@ -35,11 +34,6 @@ const data = {
       title: "Movimientos",
       url: "/transactions",
       icon: <ListIcon />,
-    },
-    {
-      title: "Reportes",
-      url: "/transactions/reports",
-      icon: <ChartBarIcon />,
     },
     {
       title: "Historial",
@@ -75,7 +69,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
-        <NavMain items={data.navMain} quickCreateUrl="/transactions/new" quickCreateIcon={<PlusCircleIcon />} />
+        <NavMain items={data.navMain} quickCreateUrl="/transactions/directo" quickCreateIcon={<PlusCircleIcon />} />
         <NavSecondary items={data.navSecondary} className="mt-auto" />
       </SidebarContent>
       <SidebarFooter>

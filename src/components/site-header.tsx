@@ -8,8 +8,8 @@ const TITLES: Record<string, string> = {
   "/dashboard": "Dashboard",
   "/transactions": "Movimientos",
   "/transactions/new": "Nuevo movimiento",
-  "/transactions/import": "Importar movimientos del banco",
-  "/transactions/reports": "Reportes",
+  "/transactions/directo": "Nuevo directo",
+  "/transactions/import": "Importar movimientos",
   "/transactions/historial": "Historial de movimientos",
   "/nomenclatures": "Nomencladores",
   "/nomenclatures/categories": "Nomencladores · Categorías",
@@ -17,9 +17,17 @@ const TITLES: Record<string, string> = {
   "/nomenclatures/allowed-emails": "Nomencladores · Emails permitidos",
 }
 
+// Resolves the header title for a pathname, handling the dynamic movement
+// detail route (/transactions/<id>) that can't be a fixed key in TITLES.
+function resolveTitle(pathname: string): string {
+  if (TITLES[pathname]) return TITLES[pathname]
+  if (/^\/transactions\/[^/]+$/.test(pathname)) return "Detalle del movimiento"
+  return "Accounting CC2"
+}
+
 export function SiteHeader() {
   const pathname = usePathname()
-  const title = TITLES[pathname] || "Accounting CC2"
+  const title = resolveTitle(pathname)
 
   return (
     <header className="flex h-(--header-height) shrink-0 items-center gap-2 border-b transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-(--header-height)">

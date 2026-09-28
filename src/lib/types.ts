@@ -2,6 +2,9 @@ export type Category = {
   id: string;
   name: string;
   color: string;
+  // Keywords that auto-assign this category to a movement whose concept/merchant
+  // text contains one of them (see migration 0011 and src/lib/category-rules.ts).
+  keywords: string[];
 };
 
 export type Member = {
@@ -23,6 +26,10 @@ export type Transaction = {
   assigned_member_id: string | null;
   source: "manual" | "receipt" | "csv" | "bank" | "general";
   entry_ref: string | null;
+  value_date: string | null;
+  balance: number | null;
+  group_id: string | null;
+  notes: string | null;
   created_at: string;
   categories?: Category | null;
   members?: Member | null;

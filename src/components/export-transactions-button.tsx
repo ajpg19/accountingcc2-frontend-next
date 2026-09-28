@@ -14,6 +14,9 @@ export function ExportTransactionsButton({ data }: { data: Transaction[] }) {
       Importe: t.type === "expense" ? -Math.abs(Number(t.amount)) : Math.abs(Number(t.amount)),
       Categoría: t.categories?.name || "",
       Persona: t.members?.name || "",
+      "Fecha valor": t.value_date?.slice(0, 10) || "",
+      Saldo: t.balance ?? "",
+      "Nº Apunte": t.entry_ref || "",
     }));
 
     const ws = XLSX.utils.json_to_sheet(rows);
@@ -24,6 +27,9 @@ export function ExportTransactionsButton({ data }: { data: Transaction[] }) {
       { wch: 12 },
       { wch: 18 },
       { wch: 18 },
+      { wch: 12 },
+      { wch: 12 },
+      { wch: 12 },
     ];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Movimientos");

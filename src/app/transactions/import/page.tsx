@@ -6,10 +6,22 @@ import { useEffect, useState } from "react";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { toast } from "sonner";
-import { UploadCloudIcon, FileSpreadsheetIcon, XIcon, RefreshCwIcon } from "lucide-react";
+import { UploadCloudIcon, FileSpreadsheetIcon, XIcon, RefreshCwIcon, AlertTriangleIcon, InfoIcon, DownloadIcon } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { PageHeader } from "@/components/page-header";
+import { matchCategoryId } from "@/lib/category-rules";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type { Category, Member } from "@/lib/types";
+
+// Radix Select forbids an empty-string item value, so the "no selection"
+// option uses this sentinel while state keeps "" for none.
+const NONE = "__none__";
 
 type RawRow = Record<string, string>;
 
@@ -126,6 +138,65 @@ function parseAmount(raw: string): number {
   return parseFloat(s) || 0;
 }
 
+function stripAccents(s: string): string {
+  return s.normalize("NFD").replace(/[̀-ͯ]/g, "");
+}
+
+function normalizeText(s: string): string {
+  return stripAccents((s || "").toLowerCase());
+}
+
+// Intenta detectar a qué miembro pertenece un movimiento a partir del concepto.
+// Ej.: "TRF. ALBERTO JESUS PEREZ GALBAN" -> el miembro cuyo nombre aparece en el
+// texto. Puntúa cada miembro por el nº de palabras de su nombre presentes en el
+// concepto y solo asigna si hay un ganador claro (sin empates), para evitar
+// falsos positivos entre miembros que compartan nombre o apellidos.
+function matchMemberIdFromDescription(description: string, members: Member[]): string {
+  const words = new Set(
+    normalizeText(description).split(/[^a-z0-9]+/).filter(Boolean)
+  );
+  if (!words.size) return "";
+
+  let best: Member | undefined;
+  let bestScore = 0;
+  let tie = false;
+
+  for (const m of members) {
+    const tokens = normalizeText(m.name || "")
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length >= 3);
+    if (!tokens.length) continue;
+    const score = tokens.filter((t) => words.has(t)).length;
+    if (score === 0) continue;
+    if (score > bestScore) {
+      best = m;
+      bestScore = score;
+      tie = false;
+    } else if (score === bestScore) {
+      tie = true;
+    }
+  }
+
+  return best && !tie ? best.id : "";
+}
+
+// Key used to detect EXACTLY equal movements: same day, amount, type and
+// concept (normalized, accent- and case-insensitive). Used to warn about rows
+// that already exist in the database even when they have no entry reference.
+function exactDuplicateKey(
+  occurredOn: string,
+  amount: number,
+  type: string,
+  description: string
+): string {
+  return [
+    (occurredOn || "").slice(0, 10),
+    amount.toFixed(2),
+    type,
+    normalizeText(description).trim(),
+  ].join("|");
+}
+
 type ImportOrigin = "bank" | "general";
 
 type ImportRow = {
@@ -133,14 +204,24 @@ type ImportRow = {
   id?: string;
   entryRef?: string;
   duplicate: boolean;
+  dateInvalid: boolean;
   date: string;
+  valueDate?: string;
+  balance?: number;
   description: string;
+  merchant: string;
   amount: number;
   type: "expense" | "income";
   categoryId: string;
   memberId: string;
+  notes: string;
   include: boolean;
 };
+
+// Auto-note added when a movement is imported without a date: it means the date
+// shown is the day it was uploaded, not the real operation date.
+const EMPTY_DATE_NOTE =
+  "La fecha corresponde al día en que se subió el movimiento.";
 
 export default function ImportCsvPage() {
   const supabase = createClient();
@@ -155,11 +236,15 @@ export default function ImportCsvPage() {
   const [dragActive, setDragActive] = useState(false);
   const [dateCol, setDateCol] = useState("");
   const [descCol, setDescCol] = useState("");
+  const [merchantCol, setMerchantCol] = useState("");
   const [amountCol, setAmountCol] = useState("");
+  const [valueDateCol, setValueDateCol] = useState("");
+  const [balanceCol, setBalanceCol] = useState("");
   const [idCol, setIdCol] = useState("");
   const [entryRefCol, setEntryRefCol] = useState("");
   const [categoryCol, setCategoryCol] = useState("");
   const [memberCol, setMemberCol] = useState("");
+  const [notesCol, setNotesCol] = useState("");
   const [origin, setOrigin] = useState<ImportOrigin>("bank");
 
   const [rows, setRows] = useState<ImportRow[]>([]);
@@ -205,12 +290,16 @@ export default function ImportCsvPage() {
       setAccountInfo(parsed.accountInfo || {});
 
       setDateCol(guessHeader(parsed.headers, ["fecha de la operación", "fecha operación", "fecha"]));
-      setDescCol(guessHeader(parsed.headers, ["concepto", "tipo movimiento", "descripcion", "descripción"]));
+      setDescCol(guessHeader(parsed.headers, ["descripción", "descripcion", "concepto", "tipo movimiento"]));
+      setMerchantCol(guessHeader(parsed.headers, ["comercio", "origen"]));
       setAmountCol(guessHeader(parsed.headers, ["importe", "cantidad"]));
+      setValueDateCol(guessHeader(parsed.headers, ["fecha valor", "fecha de valor"]));
+      setBalanceCol(guessHeader(parsed.headers, ["saldo", "balance"]));
       setIdCol(guessIdColumn(parsed.headers));
       setEntryRefCol(guessHeader(parsed.headers, ["apunte", "nº apunte", "nro. apunte", "numero de apunte", "número de apunte"]));
       setCategoryCol(guessHeader(parsed.headers, ["categoría", "categoria"]));
       setMemberCol(guessHeader(parsed.headers, ["persona", "miembro"]));
+      setNotesCol(guessHeader(parsed.headers, ["observaciones", "observación", "observacion", "notas", "nota"]));
 
       setStep("map");
     } catch {
@@ -234,6 +323,36 @@ export default function ImportCsvPage() {
     setStep("upload");
   }
 
+  // Downloads an Excel template for "general" movements. Headers match the ones
+  // the importer auto-detects (see the guessHeader() calls), plus a sample row
+  // to show the expected date/amount format.
+  function downloadGeneralTemplate() {
+    const headers = [
+      "Fecha",
+      "Descripción",
+      "Comercio / origen",
+      "Importe",
+      "Categoría",
+      "Persona",
+      "Nº Apunte",
+      "Observaciones",
+    ];
+    const example = [
+      "",
+      "Ejemplo (bórralo o sustitúyelo)",
+      "",
+      -12.34,
+      "",
+      "",
+      "",
+      "Si dejas la fecha vacía se usará la de hoy",
+    ];
+    const ws = XLSX.utils.aoa_to_sheet([headers, example]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Movimientos");
+    XLSX.writeFile(wb, "plantilla-movimientos-generales.xlsx");
+  }
+
   async function buildRowsAndSuggest() {
     const parsed: ImportRow[] = rawRows.map((r, i) => {
       const amount = parseAmount(r[amountCol]);
@@ -242,21 +361,56 @@ export default function ImportCsvPage() {
       const cat = catName
         ? categories.find((c) => c.name.toLowerCase() === catName.toLowerCase())
         : undefined;
+      // Keyword rules (e.g. "hidralia" -> Agua) as a deterministic fallback
+      // when the file has no category column match. Applied before the AI so
+      // known payees are always filed the same way.
+      const ruleCategoryId = matchCategoryId(r[descCol] || "", categories);
       const mem = memName
         ? members.find((m) => m.name?.toLowerCase() === memName.toLowerCase())
         : undefined;
+      const description = r[descCol] || "";
+      const merchant = merchantCol ? (r[merchantCol] || "").trim() : "";
+      // When the file has no member column, infer it from the concept
+      // (e.g. a transfer "TRF. ALBERTO ..." is assigned to that member).
+      const memberId =
+        mem?.id || matchMemberIdFromDescription(description, members);
+      const rawDate = (r[dateCol] || "").trim();
+      // An empty date is allowed: it defaults to today (the upload day). Only a
+      // non-empty date that can't be parsed is treated as invalid.
+      const dateEmpty = rawDate === "";
+      const effectiveDate = dateEmpty
+        ? new Date().toISOString().slice(0, 10)
+        : rawDate;
+      const dateInvalid = !dateEmpty && !normalizeDate(rawDate);
+      const valueDate = valueDateCol
+        ? normalizeDate(r[valueDateCol] || "") || undefined
+        : undefined;
+      const balanceRaw = balanceCol ? r[balanceCol]?.trim() : "";
+      const balance = balanceRaw ? parseAmount(balanceRaw) : undefined;
+      const mappedNotes = notesCol ? (r[notesCol] || "").trim() : "";
+      // Combine any notes from the file with the auto-note for empty dates.
+      const notes = [mappedNotes, dateEmpty ? EMPTY_DATE_NOTE : ""]
+        .filter(Boolean)
+        .join(" · ");
       return {
         index: i,
         id: idCol ? r[idCol] || undefined : undefined,
         entryRef: entryRefCol ? r[entryRefCol]?.trim() || undefined : undefined,
         duplicate: false,
-        date: r[dateCol] || "",
-        description: r[descCol] || "",
+        dateInvalid,
+        date: effectiveDate,
+        valueDate,
+        balance,
+        description,
+        merchant,
         amount: Math.abs(amount),
         type: amount < 0 ? "expense" : "income",
-        categoryId: cat?.id || "",
-        memberId: mem?.id || "",
-        include: true,
+        categoryId: cat?.id || ruleCategoryId,
+        memberId,
+        notes,
+        // Rows with an unparseable date are excluded by default so they can't
+        // be imported with a wrong date; the user sees a "Fecha inválida" badge.
+        include: !dateInvalid,
       };
     });
 
@@ -295,6 +449,111 @@ export default function ImportCsvPage() {
         }
       } finally {
         setCheckingDuplicates(false);
+      }
+    }
+
+    // Source-aware exact-duplicate detection against the database: same day,
+    // amount, type and concept. An entry reference (nº de apunte) only
+    // identifies a movement WITHIN its own source, so two movements that share
+    // the key are treated as the SAME operation UNLESS they share the source AND
+    // both carry an entry reference — only then are they genuinely different
+    // (e.g. two identical bank transfers with different references, kept via the
+    // (source, entry_ref) dedup above). In practice a row is flagged as
+    // duplicate when a matching row exists from a DIFFERENT source, or when
+    // either side lacks an entry reference.
+    if (!isUpdateMode) {
+      const inserts = parsed.filter((r) => !r.id && !r.duplicate);
+      const dates = inserts.map((r) => normalizeDate(r.date)).filter(Boolean);
+      if (dates.length) {
+        setCheckingDuplicates(true);
+        try {
+          // Source the rows will be written with (they all share it). Must match
+          // what confirmImport actually inserts (always `origin`), otherwise the
+          // same-source check below reasons about the wrong source.
+          const importSource: string = origin;
+          const minDate = dates.reduce((a, b) => (a < b ? a : b));
+          const maxDate = dates.reduce((a, b) => (a > b ? a : b));
+          // Paginate: supabase-js caps a single select at 1000 rows by default,
+          // so a wide date range could silently miss existing movements and let
+          // duplicates through. Read the whole range in pages.
+          const existing: {
+            occurred_on: string;
+            amount: number | string;
+            type: string;
+            description: string | null;
+            source: string;
+            entry_ref: string | null;
+          }[] = [];
+          const pageSize = 1000;
+          for (let from = 0; ; from += pageSize) {
+            const { data: page } = await supabase
+              .from("transactions")
+              .select("occurred_on, amount, type, description, source, entry_ref")
+              .gte("occurred_on", minDate)
+              .lte("occurred_on", maxDate)
+              .range(from, from + pageSize - 1);
+            if (!page?.length) break;
+            existing.push(...page);
+            if (page.length < pageSize) break;
+          }
+          // Per key: which sources already have a row, and whether any existing
+          // row lacks an entry reference.
+          const existingSources = new Map<string, Set<string>>();
+          const existingNoRef = new Set<string>();
+          existing.forEach(
+            (d: {
+              occurred_on: string;
+              amount: number | string;
+              type: string;
+              description: string | null;
+              source: string;
+              entry_ref: string | null;
+            }) => {
+              const key = exactDuplicateKey(
+                d.occurred_on,
+                Number(d.amount),
+                d.type,
+                d.description ?? ""
+              );
+              const set = existingSources.get(key) ?? new Set<string>();
+              set.add(d.source);
+              existingSources.set(key, set);
+              if (!d.entry_ref) existingNoRef.add(key);
+            }
+          );
+          // Track rows already accepted within this same file so repeats are
+          // caught too. Every row here shares importSource, so a repeat is a
+          // duplicate unless both rows carry an entry reference.
+          const seenAny = new Set<string>();
+          const seenNoRef = new Set<string>();
+          for (const row of parsed) {
+            if (row.id || row.duplicate) continue;
+            const key = exactDuplicateKey(
+              normalizeDate(row.date),
+              row.amount,
+              row.type,
+              row.description
+            );
+            const srcs = existingSources.get(key);
+            const matchesExisting =
+              existingNoRef.has(key) ||
+              (!!srcs &&
+                (Array.from(srcs).some((s) => s !== importSource) ||
+                  !row.entryRef));
+            const matchesInFile = row.entryRef
+              ? seenNoRef.has(key)
+              : seenAny.has(key);
+            if (matchesExisting || matchesInFile) {
+              row.duplicate = true;
+              row.include = false;
+            } else {
+              seenAny.add(key);
+              if (!row.entryRef) seenNoRef.add(key);
+            }
+          }
+        } finally {
+          setCheckingDuplicates(false);
+        }
       }
     }
 
@@ -357,12 +616,14 @@ export default function ImportCsvPage() {
         data: { user },
       } = await supabase.auth.getUser();
 
-      const included = rows.filter((r) => r.include);
+      // Never send rows with an unparseable date, even if re-checked manually:
+      // occurred_on would be empty and the insert/update would fail.
+      const included = rows.filter((r) => r.include && !r.dateInvalid);
       const toUpdate = included.filter((r) => r.id);
       const toInsert = included.filter((r) => !r.id);
 
       if (toUpdate.length) {
-        await Promise.all(
+        const results = await Promise.all(
           toUpdate.map((r) =>
             supabase
               .from("transactions")
@@ -370,13 +631,17 @@ export default function ImportCsvPage() {
                 type: r.type,
                 amount: r.amount,
                 description: r.description,
+                merchant: r.merchant || null,
                 occurred_on: normalizeDate(r.date),
                 category_id: r.categoryId || null,
                 assigned_member_id: r.memberId || null,
+                notes: r.notes || null,
               })
               .eq("id", r.id)
           )
         );
+        const updateError = results.find((res) => res.error)?.error;
+        if (updateError) throw updateError;
       }
 
       if (toInsert.length) {
@@ -384,34 +649,41 @@ export default function ImportCsvPage() {
           type: r.type,
           amount: r.amount,
           description: r.description,
+          merchant: r.merchant || null,
           occurred_on: normalizeDate(r.date),
           category_id: r.categoryId || null,
           assigned_member_id: r.memberId || null,
-          source: isDedupMode ? origin : ("csv" as const),
+          notes: r.notes || null,
+          // Use the selected origin (bank/general) as the source so bank
+          // documents are always stored as "bank". We no longer fall back to
+          // "csv" when no entry-ref column is mapped.
+          source: origin,
           entry_ref: r.entryRef || null,
+          value_date: r.valueDate || null,
+          balance: r.balance ?? null,
           raw_import_row: rawRows[r.index],
           created_by: user?.email,
         }));
 
-        if (isDedupMode) {
-          // Red de seguridad: si otro apunte se coló entre medias, el índice
-          // único (source, entry_ref) lo ignora en vez de fallar.
-          await supabase
-            .from("transactions")
-            .upsert(payload, {
-              onConflict: "source,entry_ref",
-              ignoreDuplicates: true,
-            });
-        } else {
-          await supabase.from("transactions").insert(payload);
-        }
+        // Los duplicados por (origen, nº apunte) ya se descartan en el cliente
+        // (buildRowsAndSuggest), así que insertamos directamente. No usamos
+        // upsert con onConflict porque el índice único es PARCIAL
+        // (where entry_ref is not null) y Postgres no lo admite como árbitro de
+        // ON CONFLICT sin su predicado, lo que hacía fallar toda la inserción.
+        const { error: insertError } = await supabase
+          .from("transactions")
+          .insert(payload);
+        if (insertError) throw insertError;
       }
 
-      await supabase.from("csv_imports").insert({
+      const { error: logError } = await supabase.from("csv_imports").insert({
         filename: fileName,
         imported_by: user?.email,
         row_count: included.length,
       });
+      // El registro del import es secundario: si falla, no revertimos la
+      // importación ya realizada, solo lo dejamos en consola.
+      if (logError) console.error("No se pudo registrar el import:", logError);
 
       const skippedNote = duplicateCount ? ` (${duplicateCount} duplicado(s) ignorados)` : "";
       toast.success(
@@ -428,7 +700,15 @@ export default function ImportCsvPage() {
       setFileName("");
     } catch (err) {
       console.error(err);
-      toast.error("No se ha podido completar la importación.");
+      const message =
+        err && typeof err === "object" && "message" in err
+          ? String((err as { message: unknown }).message)
+          : "";
+      toast.error(
+        message
+          ? `No se ha podido completar la importación: ${message}`
+          : "No se ha podido completar la importación."
+      );
     } finally {
       setSaving(false);
     }
@@ -438,6 +718,11 @@ export default function ImportCsvPage() {
   const updateCount = rows.filter((r) => r.include && r.id).length;
   const insertCount = includedCount - updateCount;
   const duplicateCount = rows.filter((r) => r.duplicate).length;
+  const invalidCount = rows.filter((r) => r.dateInvalid).length;
+  // Show the status column whenever a row can carry a state badge
+  // (update/dedup modes) or when exact duplicates / invalid dates were detected.
+  const showStatus =
+    isUpdateMode || isDedupMode || duplicateCount > 0 || invalidCount > 0;
 
   return (
     <div className="max-w-3xl space-y-6">
@@ -448,6 +733,140 @@ export default function ImportCsvPage() {
 
       {step === "upload" && (
         <div className="space-y-3">
+          <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-4">
+            <label className="text-xs font-medium text-slate-600">
+              ¿Qué vas a importar?
+            </label>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setOrigin("bank")}
+                className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium ${
+                  origin === "bank"
+                    ? "border-slate-900 bg-slate-50 text-slate-900"
+                    : "border-slate-200 bg-white text-slate-500"
+                }`}
+              >
+                Movimientos del banco
+              </button>
+              <button
+                type="button"
+                onClick={() => setOrigin("general")}
+                className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium ${
+                  origin === "general"
+                    ? "border-slate-900 bg-slate-50 text-slate-900"
+                    : "border-slate-200 bg-white text-slate-500"
+                }`}
+              >
+                Movimientos generales
+              </button>
+            </div>
+            <p className="text-xs text-slate-500">
+              Los movimientos cuyo nº de apunte ya exista en este origen se
+              ignorarán automáticamente.
+            </p>
+          </div>
+
+          {origin === "bank" && (
+            <div className="space-y-2 rounded-xl border border-sky-200 bg-sky-50 p-4 text-xs text-sky-900">
+              <p className="flex items-center gap-2 font-medium">
+                <InfoIcon className="size-4 shrink-0" />
+                Formato del extracto del banco
+              </p>
+              <p>
+                Sube el mismo tipo de archivo que descargas del banco (CSV o
+                Excel), sin modificarlo. Puede traer filas de cabecera con{" "}
+                <strong>Nombre</strong> e <strong>IBAN</strong>; se detectan
+                solas. La fila de encabezados debe tener estas columnas:
+              </p>
+              <ul className="ml-1 space-y-0.5">
+                <li>
+                  · <strong>Fecha de la operación</strong> — fecha del
+                  movimiento (DD/MM/AAAA o AAAA-MM-DD).
+                </li>
+                <li>
+                  · <strong>Fecha valor</strong> — opcional.
+                </li>
+                <li>
+                  · <strong>Tipo movimiento</strong> — descripción / concepto.
+                </li>
+                <li>
+                  · <strong>Importe</strong> — negativo para gastos, positivo
+                  para ingresos.
+                </li>
+                <li>
+                  · <strong>Saldo</strong> — opcional.
+                </li>
+                <li>
+                  · <strong>Nro. Apunte</strong> — referencia única; sirve para
+                  no importar dos veces el mismo movimiento.
+                </li>
+              </ul>
+              <p className="text-sky-700">
+                En el siguiente paso podrás revisar y ajustar a qué columna
+                corresponde cada dato.
+              </p>
+            </div>
+          )}
+
+          {origin === "general" && (
+            <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-700">
+              <p className="flex items-center gap-2 font-medium">
+                <InfoIcon className="size-4 shrink-0" />
+                Formato de los movimientos generales
+              </p>
+              <p>
+                Son movimientos que no vienen del banco. Descarga la plantilla,
+                rellena una fila por movimiento y súbela (CSV o Excel). Columnas:
+              </p>
+              <ul className="ml-1 space-y-0.5">
+                <li>
+                  · <strong>Fecha</strong> — opcional. Si la dejas vacía se usa
+                  la fecha de hoy y se anota en las observaciones.
+                </li>
+                <li>
+                  · <strong>Descripción</strong> — de qué se trata el
+                  movimiento.
+                </li>
+                <li>
+                  · <strong>Comercio / origen</strong> — opcional.
+                </li>
+                <li>
+                  · <strong>Importe</strong> — negativo para gastos, positivo
+                  para ingresos.
+                </li>
+                <li>
+                  · <strong>Categoría</strong> — opcional; debe coincidir con
+                  una categoría existente.
+                </li>
+                <li>
+                  · <strong>Persona</strong> — opcional; debe coincidir con un
+                  miembro existente.
+                </li>
+                <li>
+                  · <strong>Nº Apunte</strong> — opcional; referencia única para
+                  no importar dos veces el mismo movimiento.
+                </li>
+                <li>
+                  · <strong>Observaciones</strong> — opcional; notas libres del
+                  movimiento.
+                </li>
+              </ul>
+              <p className="text-slate-500">
+                La plantilla incluye una fila de ejemplo: bórrala o sustitúyela
+                por tus datos.
+              </p>
+              <button
+                type="button"
+                onClick={downloadGeneralTemplate}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+              >
+                <DownloadIcon className="size-3.5" />
+                Descargar plantilla
+              </button>
+            </div>
+          )}
+
           <label
             htmlFor="import-file-input"
             onDragOver={(e) => {
@@ -525,102 +944,140 @@ export default function ImportCsvPage() {
             </p>
           )}
           {!isUpdateMode && (
-            <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3">
-              <label className="text-xs font-medium text-slate-600">Origen de este archivo</label>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setOrigin("bank")}
-                  className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium ${
-                    origin === "bank"
-                      ? "border-slate-900 bg-white text-slate-900"
-                      : "border-slate-200 bg-white text-slate-500"
-                  }`}
-                >
-                  Movimientos del banco
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setOrigin("general")}
-                  className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium ${
-                    origin === "general"
-                      ? "border-slate-900 bg-white text-slate-900"
-                      : "border-slate-200 bg-white text-slate-500"
-                  }`}
-                >
-                  Movimientos generales
-                </button>
-              </div>
-              <p className="text-xs text-slate-500">
-                Los movimientos cuyo nº de apunte ya exista en este origen se ignorarán automáticamente.
-              </p>
-            </div>
+            <p className="text-xs text-slate-500">
+              Origen:{" "}
+              <strong className="text-slate-700">
+                {origin === "bank"
+                  ? "Movimientos del banco"
+                  : "Movimientos generales"}
+              </strong>
+              . Los movimientos cuyo nº de apunte ya exista en este origen se
+              ignorarán automáticamente.
+            </p>
           )}
           <div className="grid grid-cols-3 gap-3">
             <div>
               <label className="text-xs text-slate-500">Columna de fecha</label>
-              <select
-                value={dateCol}
-                onChange={(e) => setDateCol(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm"
+              <Select
+                value={dateCol || NONE}
+                onValueChange={(v) => setDateCol(v === NONE ? "" : v)}
               >
-                <option value="">-</option>
-                {headers.map((h) => (
-                  <option key={h} value={h}>
-                    {h}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger className="mt-1 w-full">
+                  <SelectValue placeholder="-" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE}>-</SelectItem>
+                  {headers.map((h) => (
+                    <SelectItem key={h} value={h}>
+                      {h}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div>
               <label className="text-xs text-slate-500">Columna de concepto</label>
-              <select
-                value={descCol}
-                onChange={(e) => setDescCol(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm"
+              <Select
+                value={descCol || NONE}
+                onValueChange={(v) => setDescCol(v === NONE ? "" : v)}
               >
-                <option value="">-</option>
-                {headers.map((h) => (
-                  <option key={h} value={h}>
-                    {h}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger className="mt-1 w-full">
+                  <SelectValue placeholder="-" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE}>-</SelectItem>
+                  {headers.map((h) => (
+                    <SelectItem key={h} value={h}>
+                      {h}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div>
               <label className="text-xs text-slate-500">
                 Columna de importe (negativo = gasto)
               </label>
-              <select
-                value={amountCol}
-                onChange={(e) => setAmountCol(e.target.value)}
-                className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm"
+              <Select
+                value={amountCol || NONE}
+                onValueChange={(v) => setAmountCol(v === NONE ? "" : v)}
               >
-                <option value="">-</option>
-                {headers.map((h) => (
-                  <option key={h} value={h}>
-                    {h}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger className="mt-1 w-full">
+                  <SelectValue placeholder="-" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE}>-</SelectItem>
+                  {headers.map((h) => (
+                    <SelectItem key={h} value={h}>
+                      {h}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-xs text-slate-500">
+                Columna de fecha valor (opcional)
+              </label>
+              <Select
+                value={valueDateCol || NONE}
+                onValueChange={(v) => setValueDateCol(v === NONE ? "" : v)}
+              >
+                <SelectTrigger className="mt-1 w-full">
+                  <SelectValue placeholder="-" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE}>-</SelectItem>
+                  {headers.map((h) => (
+                    <SelectItem key={h} value={h}>
+                      {h}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="text-xs text-slate-500">
+                Columna de saldo (opcional)
+              </label>
+              <Select
+                value={balanceCol || NONE}
+                onValueChange={(v) => setBalanceCol(v === NONE ? "" : v)}
+              >
+                <SelectTrigger className="mt-1 w-full">
+                  <SelectValue placeholder="-" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE}>-</SelectItem>
+                  {headers.map((h) => (
+                    <SelectItem key={h} value={h}>
+                      {h}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             {!isUpdateMode && (
               <div>
                 <label className="text-xs text-slate-500">
                   Columna de nº apunte (para no duplicar)
                 </label>
-                <select
-                  value={entryRefCol}
-                  onChange={(e) => setEntryRefCol(e.target.value)}
-                  className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-sm"
+                <Select
+                  value={entryRefCol || NONE}
+                  onValueChange={(v) => setEntryRefCol(v === NONE ? "" : v)}
                 >
-                  <option value="">-</option>
-                  {headers.map((h) => (
-                    <option key={h} value={h}>
-                      {h}
-                    </option>
-                  ))}
-                </select>
+                  <SelectTrigger className="mt-1 w-full">
+                    <SelectValue placeholder="-" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NONE}>-</SelectItem>
+                    {headers.map((h) => (
+                      <SelectItem key={h} value={h}>
+                        {h}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             )}
           </div>
@@ -644,6 +1101,20 @@ export default function ImportCsvPage() {
                 : " No se han encontrado duplicados."}
             </p>
           )}
+          {!isDedupMode && duplicateCount > 0 && (
+            <p className="flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              <AlertTriangleIcon className="size-4 shrink-0" />
+              {duplicateCount} movimiento(s) ya están dados de alta (mismo día,
+              importe y concepto) y se han desmarcado para no duplicarlos.
+            </p>
+          )}
+          {invalidCount > 0 && (
+            <p className="flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">
+              <AlertTriangleIcon className="size-4 shrink-0" />
+              {invalidCount} fila(s) tienen una fecha que no se ha podido leer y se
+              han excluido. Revisa la columna de fecha o corrígelas en el archivo.
+            </p>
+          )}
           {checkingDuplicates && (
             <p className="text-sm text-slate-500">Comprobando movimientos ya existentes...</p>
           )}
@@ -657,7 +1128,7 @@ export default function ImportCsvPage() {
               <thead>
                 <tr className="border-b border-slate-100 text-left text-slate-500">
                   <th className="px-3 py-2 font-normal"></th>
-                  {(isUpdateMode || isDedupMode) && (
+                  {showStatus && (
                     <th className="px-3 py-2 font-normal">Estado</th>
                   )}
                   <th className="px-3 py-2 font-normal">Fecha</th>
@@ -672,30 +1143,39 @@ export default function ImportCsvPage() {
                   <tr
                     key={r.index}
                     className={`border-b border-slate-50 ${
-                      r.duplicate ? "opacity-50" : ""
+                      r.duplicate || r.dateInvalid ? "opacity-50" : ""
                     }`}
                   >
                     <td className="px-3 py-1.5">
                       <input
                         type="checkbox"
                         checked={r.include}
+                        disabled={r.dateInvalid}
                         onChange={(e) =>
                           updateRow(r.index, { include: e.target.checked })
                         }
                       />
                     </td>
-                    {(isUpdateMode || isDedupMode) && (
+                    {showStatus && (
                       <td className="px-3 py-1.5">
                         <span
                           className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                            r.duplicate
+                            r.dateInvalid
+                              ? "bg-red-50 text-red-700"
+                              : r.duplicate
                               ? "bg-slate-100 text-slate-500"
                               : r.id
                               ? "bg-amber-50 text-amber-700"
                               : "bg-emerald-50 text-emerald-700"
                           }`}
                         >
-                          {r.duplicate ? "Ya existe" : r.id ? "Actualizar" : "Nuevo"}
+                          {r.dateInvalid
+                            ? "Fecha inválida"
+                            : r.duplicate
+                            ? "Ya existe"
+                            : r.id
+                            ? "Actualizar"
+                            : "Nuevo"}
                         </span>
                       </td>
                     )}
@@ -710,36 +1190,48 @@ export default function ImportCsvPage() {
                       {r.amount.toFixed(2)}€
                     </td>
                     <td className="px-3 py-1.5">
-                      <select
-                        value={r.categoryId}
-                        onChange={(e) =>
-                          updateRow(r.index, { categoryId: e.target.value })
+                      <Select
+                        value={r.categoryId || NONE}
+                        onValueChange={(v) =>
+                          updateRow(r.index, {
+                            categoryId: v === NONE ? "" : v,
+                          })
                         }
-                        className="rounded border border-slate-300 px-1 py-1 text-xs"
                       >
-                        <option value="">-</option>
-                        {categories.map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.name}
-                          </option>
-                        ))}
-                      </select>
+                        <SelectTrigger size="sm" className="w-full">
+                          <SelectValue placeholder="-" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={NONE}>-</SelectItem>
+                          {categories.map((c) => (
+                            <SelectItem key={c.id} value={c.id}>
+                              {c.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </td>
                     <td className="px-3 py-1.5">
-                      <select
-                        value={r.memberId}
-                        onChange={(e) =>
-                          updateRow(r.index, { memberId: e.target.value })
+                      <Select
+                        value={r.memberId || NONE}
+                        onValueChange={(v) =>
+                          updateRow(r.index, {
+                            memberId: v === NONE ? "" : v,
+                          })
                         }
-                        className="rounded border border-slate-300 px-1 py-1 text-xs"
                       >
-                        <option value="">-</option>
-                        {members.map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.name || m.email || "Sin nombre"}
-                          </option>
-                        ))}
-                      </select>
+                        <SelectTrigger size="sm" className="w-full">
+                          <SelectValue placeholder="-" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={NONE}>-</SelectItem>
+                          {members.map((m) => (
+                            <SelectItem key={m.id} value={m.id}>
+                              {m.name || m.email || "Sin nombre"}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </td>
                   </tr>
                 ))}
@@ -759,7 +1251,9 @@ export default function ImportCsvPage() {
               ? `Importar ${includedCount} nuevos${
                   duplicateCount ? ` (${duplicateCount} ignorados)` : ""
                 }`
-              : `Importar ${includedCount} movimientos`}
+              : `Importar ${includedCount} movimientos${
+                  duplicateCount ? ` (${duplicateCount} ya existentes ignorados)` : ""
+                }`}
           </button>
         </div>
       )}
@@ -768,12 +1262,15 @@ export default function ImportCsvPage() {
 }
 
 function normalizeDate(d: string): string {
-  // Intenta normalizar DD/MM/YYYY o DD-MM-YYYY a YYYY-MM-DD; si ya viene en ISO, la deja igual.
+  // Normalize DD/MM/YYYY or DD-MM-YYYY to YYYY-MM-DD; leave ISO as is.
+  // Returns "" when the date cannot be parsed so the caller can flag the row
+  // instead of silently inventing today's date (which would break dedup and
+  // file the movement in the wrong month).
   if (/^\d{4}-\d{2}-\d{2}/.test(d)) return d.slice(0, 10);
   const m = d.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})/);
   if (m) {
     const [, dd, mm, yyyy] = m;
     return `${yyyy}-${mm.padStart(2, "0")}-${dd.padStart(2, "0")}`;
   }
-  return new Date().toISOString().slice(0, 10);
+  return "";
 }

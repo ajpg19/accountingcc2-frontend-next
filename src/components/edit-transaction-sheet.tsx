@@ -27,6 +27,7 @@ const NONE = "__none__"
 
 export function EditTransactionSheet({
   transaction,
+  sibling = null,
   categories,
   members,
   open,
@@ -34,31 +35,43 @@ export function EditTransactionSheet({
   onSaved,
 }: {
   transaction: Transaction | null
+  // When editing a direct-payment expense, the linked contribution row. Its
+  // amount and date are kept in sync with the expense.
+  sibling?: Transaction | null
   categories: Category[]
   members: Member[]
   open: boolean
   onOpenChange: (open: boolean) => void
   onSaved: (updated: Transaction) => void
 }) {
-  const [type, setType] = React.useState<"expense" | "income">("expense")
   const [amount, setAmount] = React.useState("")
   const [description, setDescription] = React.useState("")
   const [merchant, setMerchant] = React.useState("")
   const [occurredOn, setOccurredOn] = React.useState("")
   const [categoryId, setCategoryId] = React.useState(NONE)
   const [memberId, setMemberId] = React.useState(NONE)
+  const [notes, setNotes] = React.useState("")
   const [saving, setSaving] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
 
+  // The type is derived from the sign of the amount, not chosen manually:
+  // a negative amount is an expense, a positive one an income.
+  const type: "expense" | "income" = Number(amount) < 0 ? "expense" : "income"
+
   React.useEffect(() => {
     if (!transaction) return
-    setType(transaction.type)
-    setAmount(String(transaction.amount))
+    // Show the amount signed so the derived type matches the stored one.
+    const signed =
+      transaction.type === "expense"
+        ? -Math.abs(transaction.amount)
+        : Math.abs(transaction.amount)
+    setAmount(String(signed))
     setDescription(transaction.description ?? "")
     setMerchant(transaction.merchant ?? "")
     setOccurredOn(transaction.occurred_on?.slice(0, 10) ?? "")
     setCategoryId(transaction.category_id ?? NONE)
     setMemberId(transaction.assigned_member_id ?? NONE)
+    setNotes(transaction.notes ?? "")
     setError(null)
   }, [transaction])
 
@@ -76,12 +89,13 @@ export function EditTransactionSheet({
       .from("transactions")
       .update({
         type,
-        amount: Number(amount),
+        amount: Math.abs(Number(amount)),
         description: description || null,
         merchant: merchant || null,
         occurred_on: occurredOn,
         category_id,
         assigned_member_id,
+        notes: notes.trim() || null,
       })
       .eq("id", transaction.id)
       .select("*, categories(id, name, color), members(id, name, color)")
@@ -95,6 +109,23 @@ export function EditTransactionSheet({
     }
 
     onSaved(data as unknown as Transaction)
+
+    // Keep the linked contribution in sync (amount, date and label).
+    if (sibling) {
+      const label = (description || merchant || "pago directo").trim()
+      const { data: siblingData } = await supabase
+        .from("transactions")
+        .update({
+          amount: Math.abs(Number(amount)),
+          occurred_on: occurredOn,
+          description: `Aportación · ${label}`,
+        })
+        .eq("id", sibling.id)
+        .select("*, categories(id, name, color), members(id, name, color)")
+        .single()
+      if (siblingData) onSaved(siblingData as unknown as Transaction)
+    }
+
     onOpenChange(false)
   }
 
@@ -112,29 +143,26 @@ export function EditTransactionSheet({
           onSubmit={handleSave}
           className="flex flex-1 flex-col gap-4 overflow-y-auto px-4"
         >
+          {/* Read-only indicator: the type follows the sign of the amount. */}
           <div className="flex gap-3">
-            <button
-              type="button"
-              onClick={() => setType("expense")}
-              className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium ${
+            <div
+              className={`flex-1 rounded-lg border px-3 py-2 text-center text-sm font-medium ${
                 type === "expense"
                   ? "border-red-300 bg-red-50 text-red-700"
                   : "border-input text-muted-foreground"
               }`}
             >
               Gasto
-            </button>
-            <button
-              type="button"
-              onClick={() => setType("income")}
-              className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium ${
+            </div>
+            <div
+              className={`flex-1 rounded-lg border px-3 py-2 text-center text-sm font-medium ${
                 type === "income"
                   ? "border-emerald-300 bg-emerald-50 text-emerald-700"
                   : "border-input text-muted-foreground"
               }`}
             >
               Ingreso
-            </button>
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -211,6 +239,17 @@ export function EditTransactionSheet({
                 ))}
               </SelectContent>
             </Select>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="edit-notes">Observaciones</Label>
+            <textarea
+              id="edit-notes"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={3}
+              className="w-full rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+            />
           </div>
 
           {error && <p className="text-sm text-red-600">{error}</p>}
