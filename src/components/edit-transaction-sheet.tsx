@@ -1,8 +1,11 @@
 "use client"
 
 import * as React from "react"
+import { CopyIcon } from "lucide-react"
+import { toast } from "sonner"
 
 import { createClient } from "@/lib/supabase/client"
+import { wallClockToUTC } from "@/lib/utils"
 import type { Category, Member, Transaction } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -24,6 +27,30 @@ import {
 } from "@/components/ui/sheet"
 
 const NONE = "__none__"
+
+// Copy button shown to the right of read-only fields (bank movements) so the
+// value can still be copied even though it cannot be edited.
+function CopyButton({ value }: { value: string }) {
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="icon"
+      className="shrink-0"
+      aria-label="Copiar"
+      onClick={async () => {
+        try {
+          await navigator.clipboard.writeText(value)
+          toast.success("Copiado al portapapeles")
+        } catch {
+          toast.error("No se pudo copiar")
+        }
+      }}
+    >
+      <CopyIcon />
+    </Button>
+  )
+}
 
 export function EditTransactionSheet({
   transaction,
@@ -58,6 +85,16 @@ export function EditTransactionSheet({
   // a negative amount is an expense, a positive one an income.
   const type: "expense" | "income" = Number(amount) < 0 ? "expense" : "income"
 
+  // Bank movements come straight from the bank statement, so their factual
+  // data (amount, date, merchant, description) must stay untouched. Only the
+  // classification fields — category, assigned member and notes — are editable.
+  const isBank = transaction?.source === "bank"
+
+  // A directo is edited through its expense row; `sibling` is the linked
+  // "Atribución" income that carries the payer. The person shown/edited here is
+  // therefore the sibling's member, while the expense itself belongs to the pot.
+  const isDirecto = Boolean(sibling)
+
   React.useEffect(() => {
     if (!transaction) return
     // Show the amount signed so the derived type matches the stored one.
@@ -70,10 +107,14 @@ export function EditTransactionSheet({
     setMerchant(transaction.merchant ?? "")
     setOccurredOn(transaction.occurred_on?.slice(0, 10) ?? "")
     setCategoryId(transaction.category_id ?? NONE)
-    setMemberId(transaction.assigned_member_id ?? NONE)
+    // For a directo the payer lives on the sibling (income), not the expense.
+    setMemberId(
+      (sibling ? sibling.assigned_member_id : transaction.assigned_member_id) ??
+        NONE
+    )
     setNotes(transaction.notes ?? "")
     setError(null)
-  }, [transaction])
+  }, [transaction, sibling])
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault()
@@ -84,19 +125,31 @@ export function EditTransactionSheet({
     const category_id = categoryId === NONE ? null : categoryId
     const assigned_member_id = memberId === NONE ? null : memberId
 
+    // For bank movements only the classification fields can change; the factual
+    // data from the statement is left as-is.
+    const payload = isBank
+      ? {
+          category_id,
+          assigned_member_id,
+          notes: notes.trim() || null,
+        }
+      : {
+          type,
+          amount: Math.abs(Number(amount)),
+          description: description || null,
+          merchant: merchant || null,
+          occurred_on: wallClockToUTC(occurredOn),
+          category_id,
+          // A directo expense belongs to the shared pot; the payer is stored on
+          // the sibling (atribución), updated below.
+          assigned_member_id: isDirecto ? null : assigned_member_id,
+          notes: notes.trim() || null,
+        }
+
     const supabase = createClient()
     const { data, error: updateError } = await supabase
       .from("transactions")
-      .update({
-        type,
-        amount: Math.abs(Number(amount)),
-        description: description || null,
-        merchant: merchant || null,
-        occurred_on: occurredOn,
-        category_id,
-        assigned_member_id,
-        notes: notes.trim() || null,
-      })
+      .update(payload)
       .eq("id", transaction.id)
       .select("*, categories(id, name, color), members(id, name, color)")
       .single()
@@ -110,15 +163,16 @@ export function EditTransactionSheet({
 
     onSaved(data as unknown as Transaction)
 
-    // Keep the linked contribution in sync (amount, date and label).
+    // Keep the linked atribución in sync (amount, date, label and payer).
     if (sibling) {
       const label = (description || merchant || "pago directo").trim()
       const { data: siblingData } = await supabase
         .from("transactions")
         .update({
           amount: Math.abs(Number(amount)),
-          occurred_on: occurredOn,
-          description: `Aportación · ${label}`,
+          occurred_on: wallClockToUTC(occurredOn),
+          description: `Atribución · ${label}`,
+          assigned_member_id,
         })
         .eq("id", sibling.id)
         .select("*, categories(id, name, color), members(id, name, color)")
@@ -135,7 +189,9 @@ export function EditTransactionSheet({
         <SheetHeader>
           <SheetTitle>Editar movimiento</SheetTitle>
           <SheetDescription>
-            Modifica los datos del movimiento y guarda los cambios.
+            {isBank
+              ? "Este movimiento proviene del banco: solo puedes cambiar la categoría, la persona asignada y las observaciones."
+              : "Modifica los datos del movimiento y guarda los cambios."}
           </SheetDescription>
         </SheetHeader>
 
@@ -168,43 +224,61 @@ export function EditTransactionSheet({
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="edit-amount">Importe (€)</Label>
-              <Input
-                id="edit-amount"
-                required
-                type="number"
-                step="0.01"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-              />
+              <div className="flex items-center gap-2">
+                <Input
+                  id="edit-amount"
+                  required
+                  type="number"
+                  step="0.01"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  disabled={isBank}
+                />
+                {isBank && <CopyButton value={amount} />}
+              </div>
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="edit-date">Fecha</Label>
-              <Input
-                id="edit-date"
-                required
-                type="date"
-                value={occurredOn}
-                onChange={(e) => setOccurredOn(e.target.value)}
+              <div className="flex items-center gap-2">
+                <Input
+                  id="edit-date"
+                  required
+                  type="date"
+                  value={occurredOn}
+                  onChange={(e) => setOccurredOn(e.target.value)}
+                  disabled={isBank}
+                />
+                {isBank && <CopyButton value={occurredOn} />}
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="edit-description">Descripción</Label>
+            <div className="flex items-start gap-2">
+              <textarea
+                id="edit-description"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                disabled={isBank}
+                rows={3}
+                className="w-full rounded-lg border border-input bg-transparent px-2.5 py-1.5 text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50"
               />
+              {isBank && <CopyButton value={description} />}
             </div>
           </div>
 
           <div className="space-y-1.5">
             <Label htmlFor="edit-merchant">Comercio / origen</Label>
-            <Input
-              id="edit-merchant"
-              value={merchant}
-              onChange={(e) => setMerchant(e.target.value)}
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <Label htmlFor="edit-description">Descripción</Label>
-            <Input
-              id="edit-description"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-            />
+            <div className="flex items-center gap-2">
+              <Input
+                id="edit-merchant"
+                value={merchant}
+                onChange={(e) => setMerchant(e.target.value)}
+                disabled={isBank}
+              />
+              {isBank && <CopyButton value={merchant} />}
+            </div>
           </div>
 
           <div className="space-y-1.5">
@@ -225,7 +299,7 @@ export function EditTransactionSheet({
           </div>
 
           <div className="space-y-1.5">
-            <Label>Asignado a</Label>
+            <Label>{isDirecto ? "Atribuido a" : "Asignado a"}</Label>
             <Select value={memberId} onValueChange={setMemberId}>
               <SelectTrigger className="w-full">
                 <SelectValue placeholder="Sin asignar" />

@@ -18,6 +18,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { matchCategoryId } from "@/lib/category-rules";
+import { wallClockToUTC } from "@/lib/utils";
 import type { Category, ExtractedReceipt, Member } from "@/lib/types";
 
 const NONE = "__none__";
@@ -26,7 +27,7 @@ const NONE = "__none__";
 // entry is ALWAYS a directo — regular bank movements are imported from Excel.
 // Each directo is saved as a linked pair sharing a group_id:
 //   * the expense (the real spending, categorized), and
-//   * that person's income / contribution ("aportación") to the shared pot.
+//   * that person's income / contribution ("atribución") to the shared pot.
 export default function NewDirectoPage() {
   const router = useRouter();
   const supabase = createClient();
@@ -138,7 +139,7 @@ export default function NewDirectoPage() {
             amount: Number(amount),
             description,
             merchant,
-            occurred_on: occurredOn,
+            occurred_on: wallClockToUTC(occurredOn),
             category_id: categoryId === NONE ? null : categoryId,
             // The expense belongs to the shared pot, not to a person.
             assigned_member_id: null,
@@ -150,9 +151,9 @@ export default function NewDirectoPage() {
           {
             type: "income",
             amount: Number(amount),
-            description: `Aportación · ${label}`,
+            description: `Atribución · ${label}`,
             merchant,
-            occurred_on: occurredOn,
+            occurred_on: wallClockToUTC(occurredOn),
             category_id: incomeCategoryId,
             assigned_member_id: memberId,
             source: "manual",
@@ -216,7 +217,7 @@ export default function NewDirectoPage() {
     <div className="max-w-xl space-y-6">
       <PageHeader
         title="Nuevo directo"
-        description="Registra un gasto que alguien pagó de su bolsillo. Se guarda como gasto del bote y, a la vez, como aportación de esa persona. Los movimientos del banco se importan desde el Excel."
+        description="Registra un gasto que alguien pagó de su bolsillo. Se guarda como gasto del bote y, a la vez, como atribución de esa persona. Los movimientos del banco se importan desde el Excel."
       />
 
       <ReceiptUploader onExtracted={handleExtracted} />
@@ -247,7 +248,7 @@ export default function NewDirectoPage() {
       >
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
           Este movimiento se registra por partida doble: un <strong>gasto</strong> del
-          bote común y la <strong>aportación</strong> de quien lo pagó.
+          bote común y la <strong>atribución</strong> de quien lo pagó.
         </div>
 
         <div className="grid grid-cols-2 gap-3">

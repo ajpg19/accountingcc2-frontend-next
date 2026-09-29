@@ -10,6 +10,11 @@ export function ExportTransactionsButton({ data }: { data: Transaction[] }) {
     const rows = data.map((t) => ({
       ID: t.id,
       Fecha: t.occurred_on?.slice(0, 10),
+      // Movement time (UTC wall-clock, see lib/utils). Empty for date-only rows.
+      Hora: (() => {
+        const hhmm = t.occurred_on?.slice(11, 16) || "";
+        return hhmm === "00:00" ? "" : hhmm;
+      })(),
       Descripción: t.description || t.merchant || "",
       Importe: t.type === "expense" ? -Math.abs(Number(t.amount)) : Math.abs(Number(t.amount)),
       Categoría: t.categories?.name || "",
@@ -23,6 +28,7 @@ export function ExportTransactionsButton({ data }: { data: Transaction[] }) {
     ws["!cols"] = [
       { wch: 36 },
       { wch: 12 },
+      { wch: 8 },
       { wch: 40 },
       { wch: 12 },
       { wch: 18 },

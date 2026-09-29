@@ -4,9 +4,10 @@ import { ArrowLeftIcon, DownloadIcon, FileTextIcon } from "lucide-react"
 
 import { createClient } from "@/lib/supabase/server"
 import { PageHeader } from "@/components/page-header"
+import { TransactionHistory } from "@/components/transaction-history"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import type { ReceiptItem, Transaction } from "@/lib/types"
+import { formatOccurred } from "@/lib/utils"
+import type { Category, Member, MovementLog, ReceiptItem, Transaction } from "@/lib/types"
 
 const SOURCE_LABELS: Record<Transaction["source"], string> = {
   manual: "Manual",
@@ -90,23 +91,42 @@ export default async function TransactionDetailPage({
     })
   )
 
+  // Change history for the movement (and its pair), newest first. Categories
+  // and members are needed to resolve ids into readable labels in the diff.
+  const [{ data: logData }, { data: categoriesData }, { data: membersData }] =
+    await Promise.all([
+      supabase
+        .from("movement_log")
+        .select("*")
+        .in("transaction_id", receiptTxIds)
+        .order("changed_at", { ascending: false }),
+      supabase.from("categories").select("*").order("name"),
+      supabase.from("members").select("*").order("name"),
+    ])
+
+  const logs = (logData as unknown as MovementLog[]) ?? []
+  const categories = (categoriesData as Category[]) ?? []
+  const members = (membersData as Member[]) ?? []
+
   const isExpense = expense.type === "expense"
   const category = expense.categories
   const member = expense.members
 
   return (
     <div className="max-w-3xl space-y-6">
-      <Button asChild variant="ghost" size="sm" className="-ml-2 w-fit">
-        <Link href="/transactions">
-          <ArrowLeftIcon />
-          Volver a movimientos
+      <div className="flex items-center gap-3">
+        <Link
+          href="/transactions"
+          aria-label="Volver a movimientos"
+          className="inline-flex size-9 shrink-0 items-center justify-center rounded-full border text-muted-foreground hover:bg-muted hover:text-foreground"
+        >
+          <ArrowLeftIcon className="size-4" />
         </Link>
-      </Button>
-
-      <PageHeader
-        title={expense.description || expense.merchant || "Movimiento"}
-        description="Detalle completo del movimiento y su documentación."
-      />
+        <PageHeader
+          title={expense.description || expense.merchant || "Movimiento"}
+          description="Detalle completo del movimiento y su documentación."
+        />
+      </div>
 
       {/* Amount + type headline */}
       <div className="flex items-center justify-between rounded-xl border bg-card p-4">
@@ -133,7 +153,7 @@ export default async function TransactionDetailPage({
       {/* Details: one homogeneous list, all fields always shown for a
           consistent layout across every movement. */}
       <dl className="divide-y rounded-xl border">
-        <Field label="Fecha">{formatDate(expense.occurred_on)}</Field>
+        <Field label="Fecha">{formatOccurred(expense.occurred_on)}</Field>
         <Field label="Descripción">{expense.description || "—"}</Field>
         <Field label="Comercio / origen">{expense.merchant || "—"}</Field>
         <Field label="Categoría">
@@ -178,7 +198,7 @@ export default async function TransactionDetailPage({
           </div>
           <div className="flex items-center justify-between">
             <span className="text-muted-foreground">
-              Aportación ·{" "}
+              Atribución ·{" "}
               {income.members?.name || income.members?.email || "sin persona"}
             </span>
             <span className="font-medium text-emerald-600">
@@ -248,6 +268,18 @@ export default async function TransactionDetailPage({
             ))}
           </div>
         )}
+      </div>
+
+      {/* Change history */}
+      <div className="space-y-3">
+        <h2 className="text-sm font-medium text-muted-foreground">
+          Historial de cambios
+        </h2>
+        <TransactionHistory
+          data={logs}
+          categories={categories}
+          members={members}
+        />
       </div>
     </div>
   )

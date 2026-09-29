@@ -10,6 +10,7 @@ import { UploadCloudIcon, FileSpreadsheetIcon, XIcon, RefreshCwIcon, AlertTriang
 import { createClient } from "@/lib/supabase/client";
 import { PageHeader } from "@/components/page-header";
 import { matchCategoryId } from "@/lib/category-rules";
+import { wallClockToUTC } from "@/lib/utils";
 import {
   Select,
   SelectContent,
@@ -31,14 +32,21 @@ type ParsedFile = {
   accountInfo?: { name?: string; iban?: string };
 };
 
-// Convierte una celda de Excel (Date, número o texto) a texto homogéneo.
-// Las fechas se normalizan a YYYY-MM-DD para que normalizeDate() las reconozca.
+// Normalize an Excel cell (Date, number or text) to a homogeneous string.
+// Dates become YYYY-MM-DD, or YYYY-MM-DD HH:MM:SS when the cell carries a time
+// (e.g. "Fecha de la operación"), so normalizeDate()/normalizeDateTime() parse them.
 function cellToString(cell: unknown): string {
   if (cell instanceof Date) {
     const yyyy = cell.getFullYear();
     const mm = String(cell.getMonth() + 1).padStart(2, "0");
     const dd = String(cell.getDate()).padStart(2, "0");
-    return `${yyyy}-${mm}-${dd}`;
+    const hh = String(cell.getHours()).padStart(2, "0");
+    const mi = String(cell.getMinutes()).padStart(2, "0");
+    const ss = String(cell.getSeconds()).padStart(2, "0");
+    // Keep the time only when the cell actually carries one, so date-only cells
+    // (e.g. "Fecha valor") stay date-only.
+    if (hh === "00" && mi === "00" && ss === "00") return `${yyyy}-${mm}-${dd}`;
+    return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
   }
   if (typeof cell === "number") return String(cell);
   return String(cell ?? "").trim();
@@ -197,7 +205,57 @@ function exactDuplicateKey(
   ].join("|");
 }
 
-type ImportOrigin = "bank" | "general";
+// Bank fields (as stored) used to decide whether an already-existing movement
+// needs refreshing on re-import.
+type StoredBankFields = {
+  occurred_on: string;
+  amount: number | string;
+  description: string | null;
+  merchant: string | null;
+  value_date: string | null;
+  balance: number | string | null;
+};
+
+// The occurred_on to store for a parsed row, or null when its date can't be
+// parsed (so a bad cell never overwrites a good stored date).
+function rowOccurredOn(date: string): string | null {
+  return wallClockToUTC(normalizeDateTime(date));
+}
+
+// Build the bank-field update for an already-existing movement. Mirrors the
+// values used on insert, minus classification (category/member/notes), which is
+// always preserved. occurred_on is omitted when the date is invalid.
+function bankUpdatePayload(row: ImportRow): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    type: row.type,
+    amount: row.amount,
+    description: row.description,
+    merchant: row.merchant || null,
+    value_date: row.valueDate || null,
+    balance: row.balance ?? null,
+  };
+  const occ = rowOccurredOn(row.date);
+  if (occ) payload.occurred_on = occ;
+  return payload;
+}
+
+// Whether the file's bank fields differ from what's stored, so we only update
+// (and log in the movement history) rows that actually changed.
+function bankFieldsDiffer(row: ImportRow, stored: StoredBankFields): boolean {
+  const occ = rowOccurredOn(row.date);
+  if (occ && new Date(occ).getTime() !== new Date(stored.occurred_on).getTime())
+    return true;
+  if (Number(stored.amount) !== row.amount) return true;
+  if ((stored.description ?? "") !== (row.description ?? "")) return true;
+  if ((stored.merchant ?? "") !== (row.merchant ?? "")) return true;
+  if ((stored.value_date ?? "") !== (row.valueDate ?? "")) return true;
+  const storedBalance = stored.balance == null ? null : Number(stored.balance);
+  const rowBalance = row.balance ?? null;
+  if (storedBalance !== rowBalance) return true;
+  return false;
+}
+
+type ImportOrigin = "bank" | "directo";
 
 type ImportRow = {
   index: number;
@@ -216,6 +274,12 @@ type ImportRow = {
   memberId: string;
   notes: string;
   include: boolean;
+  // When this row matches a movement that already exists (same source +
+  // entry_ref) AND some bank field differs from what's stored, this holds the
+  // existing row's id so its factual fields (date/time, amount, description,
+  // merchant, value date, balance) are refreshed on confirm. Classification
+  // (category, member, notes) is always left untouched.
+  existingId?: string;
 };
 
 // Auto-note added when a movement is imported without a date: it means the date
@@ -254,7 +318,12 @@ export default function ImportCsvPage() {
   const [saving, setSaving] = useState(false);
 
   const isUpdateMode = Boolean(idCol);
-  const isDedupMode = Boolean(entryRefCol) && !isUpdateMode;
+  // "Directo" mode: each row becomes a double-entry pair (expense to the shared
+  // pot + "Atribución" income to the payer), like /transactions/directo. Bulk
+  // version of that form. It uses no entry_ref (so it never collides with bank
+  // references) and has no dedup, matching the single-entry directo form.
+  const isDirecto = origin === "directo";
+  const isDedupMode = Boolean(entryRefCol) && !isUpdateMode && !isDirecto;
 
   useEffect(() => {
     (async () => {
@@ -323,10 +392,11 @@ export default function ImportCsvPage() {
     setStep("upload");
   }
 
-  // Downloads an Excel template for "general" movements. Headers match the ones
+  // Downloads an Excel template for directo movements. Headers match the ones
   // the importer auto-detects (see the guessHeader() calls), plus a sample row
-  // to show the expected date/amount format.
-  function downloadGeneralTemplate() {
+  // to show the expected date/amount format. No "Nº Apunte": directos don't use
+  // an entry reference.
+  function downloadDirectoTemplate() {
     const headers = [
       "Fecha",
       "Descripción",
@@ -334,15 +404,13 @@ export default function ImportCsvPage() {
       "Importe",
       "Categoría",
       "Persona",
-      "Nº Apunte",
       "Observaciones",
     ];
     const example = [
-      "",
+      "31/12/2025",
       "Ejemplo (bórralo o sustitúyelo)",
       "",
       -12.34,
-      "",
       "",
       "",
       "Si dejas la fecha vacía se usará la de hoy",
@@ -350,7 +418,7 @@ export default function ImportCsvPage() {
     const ws = XLSX.utils.aoa_to_sheet([headers, example]);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Movimientos");
-    XLSX.writeFile(wb, "plantilla-movimientos-generales.xlsx");
+    XLSX.writeFile(wb, "plantilla-directos.xlsx");
   }
 
   async function buildRowsAndSuggest() {
@@ -372,8 +440,11 @@ export default function ImportCsvPage() {
       const merchant = merchantCol ? (r[merchantCol] || "").trim() : "";
       // When the file has no member column, infer it from the concept
       // (e.g. a transfer "TRF. ALBERTO ..." is assigned to that member).
-      const memberId =
-        mem?.id || matchMemberIdFromDescription(description, members);
+      // In directo mode the payer must be explicit: only an exact member-name
+      // match counts; no name -> atribución with no person (left empty).
+      const memberId = isDirecto
+        ? mem?.id || ""
+        : mem?.id || matchMemberIdFromDescription(description, members);
       const rawDate = (r[dateCol] || "").trim();
       // An empty date is allowed: it defaults to today (the upload day). Only a
       // non-empty date that can't be parsed is treated as invalid.
@@ -414,35 +485,57 @@ export default function ImportCsvPage() {
       };
     });
 
-    // Deduplicación por número de apunte dentro del mismo origen (banco/general).
-    // Los que ya existen en la base de datos se marcan como duplicados y se
-    // desmarcan para no volver a añadirlos.
+    // Dedup by entry reference (nº de apunte) for bank movements: rows already
+    // in the database are flagged as duplicates and unchecked so they aren't
+    // added again (and their bank fields are refreshed if they changed).
     if (isDedupMode) {
       setCheckingDuplicates(true);
       try {
         const refs = Array.from(
           new Set(parsed.map((r) => r.entryRef).filter((v): v is string => Boolean(v)))
         );
-        const existing = new Set<string>();
+        // Keep the existing row's id and bank fields so we can refresh them in
+        // place (instead of only skipping the row as a duplicate) when the file
+        // brings a newer value.
+        type ExistingRow = {
+          id: string;
+          occurred_on: string;
+          amount: number | string;
+          description: string | null;
+          merchant: string | null;
+          value_date: string | null;
+          balance: number | string | null;
+        };
+        const existing = new Map<string, ExistingRow>();
         const chunkSize = 200;
         for (let i = 0; i < refs.length; i += chunkSize) {
           const chunk = refs.slice(i, i + chunkSize);
           const { data } = await supabase
             .from("transactions")
-            .select("entry_ref")
+            .select(
+              "id, entry_ref, occurred_on, amount, description, merchant, value_date, balance"
+            )
             .eq("source", origin)
             .in("entry_ref", chunk);
-          (data ?? []).forEach((d: { entry_ref: string | null }) => {
-            if (d.entry_ref) existing.add(d.entry_ref);
+          (data ?? []).forEach((d: ExistingRow & { entry_ref: string | null }) => {
+            if (d.entry_ref) existing.set(d.entry_ref, d);
           });
         }
         // Marca también duplicados dentro del propio archivo (mismo apunte repetido).
         const seen = new Set<string>();
         for (const row of parsed) {
           if (!row.entryRef) continue;
-          if (existing.has(row.entryRef) || seen.has(row.entryRef)) {
+          const match = existing.get(row.entryRef);
+          if (match || seen.has(row.entryRef)) {
             row.duplicate = true;
             row.include = false;
+            // If it already exists, refresh its bank fields when any differs
+            // from what's stored (classification stays untouched). We only flag
+            // rows that actually changed so re-importing the same file is a
+            // no-op and doesn't clutter the movement history.
+            if (match && bankFieldsDiffer(row, match)) {
+              row.existingId = match.id;
+            }
           } else {
             seen.add(row.entryRef);
           }
@@ -461,7 +554,7 @@ export default function ImportCsvPage() {
     // (source, entry_ref) dedup above). In practice a row is flagged as
     // duplicate when a matching row exists from a DIFFERENT source, or when
     // either side lacks an entry reference.
-    if (!isUpdateMode) {
+    if (!isUpdateMode && !isDirecto) {
       const inserts = parsed.filter((r) => !r.id && !r.duplicate);
       const dates = inserts.map((r) => normalizeDate(r.date)).filter(Boolean);
       if (dates.length) {
@@ -489,8 +582,11 @@ export default function ImportCsvPage() {
             const { data: page } = await supabase
               .from("transactions")
               .select("occurred_on, amount, type, description, source, entry_ref")
-              .gte("occurred_on", minDate)
-              .lte("occurred_on", maxDate)
+              // occurred_on is now a timestamptz. Bound the range across the
+              // whole day (00:00–23:59:59.999 UTC) so daytime movements aren't
+              // excluded by comparing against a bare date at 00:00.
+              .gte("occurred_on", `${minDate}T00:00:00.000Z`)
+              .lte("occurred_on", `${maxDate}T23:59:59.999Z`)
               .range(from, from + pageSize - 1);
             if (!page?.length) break;
             existing.push(...page);
@@ -592,7 +688,9 @@ export default function ImportCsvPage() {
                 (m) => m.name?.toLowerCase() === String(s.member).toLowerCase()
               );
               if (cat && !row.categoryId) row.categoryId = cat.id;
-              if (mem && !row.memberId) row.memberId = mem.id;
+              // In directo mode the payer must be explicit (exact name match);
+              // never let the AI guess who paid.
+              if (mem && !row.memberId && !isDirecto) row.memberId = mem.id;
             }
           }
           setRows([...updated]);
@@ -622,6 +720,70 @@ export default function ImportCsvPage() {
       const toUpdate = included.filter((r) => r.id);
       const toInsert = included.filter((r) => !r.id);
 
+      // Directo mode: turn each row into a linked pair (expense to the shared
+      // pot + "Atribución" income to the payer), exactly like the single-entry
+      // /transactions/directo form. No entry_ref (never touches bank refs).
+      if (isDirecto) {
+        const incomeCategoryId =
+          categories.find((c) => c.name.toLowerCase() === "ingreso")?.id ?? null;
+        const payload = included.flatMap((r) => {
+          const groupId = crypto.randomUUID();
+          const occurredOn = wallClockToUTC(normalizeDateTime(r.date));
+          const label = (r.description || r.merchant || "pago directo").trim();
+          return [
+            {
+              type: "expense",
+              amount: r.amount,
+              description: r.description,
+              merchant: r.merchant || null,
+              occurred_on: occurredOn,
+              category_id: r.categoryId || null,
+              // The expense belongs to the shared pot, not to a person.
+              assigned_member_id: null,
+              source: "manual",
+              group_id: groupId,
+              notes: r.notes || null,
+              created_by: user?.email,
+            },
+            {
+              type: "income",
+              amount: r.amount,
+              description: `Atribución · ${label}`,
+              merchant: r.merchant || null,
+              occurred_on: occurredOn,
+              category_id: incomeCategoryId,
+              // The payer's contribution; empty when the name didn't match.
+              assigned_member_id: r.memberId || null,
+              source: "manual",
+              group_id: groupId,
+              created_by: user?.email,
+            },
+          ];
+        });
+
+        if (payload.length) {
+          const { error: insertError } = await supabase
+            .from("transactions")
+            .insert(payload);
+          if (insertError) throw insertError;
+        }
+
+        await supabase.from("csv_imports").insert({
+          filename: fileName,
+          imported_by: user?.email,
+          row_count: included.length,
+        });
+
+        toast.success(
+          `${included.length} directo(s) importados (${payload.length} apuntes).`
+        );
+        setStep("upload");
+        setRawRows([]);
+        setRows([]);
+        setFileName("");
+        return;
+      }
+
       if (toUpdate.length) {
         const results = await Promise.all(
           toUpdate.map((r) =>
@@ -632,7 +794,7 @@ export default function ImportCsvPage() {
                 amount: r.amount,
                 description: r.description,
                 merchant: r.merchant || null,
-                occurred_on: normalizeDate(r.date),
+                occurred_on: wallClockToUTC(normalizeDateTime(r.date)),
                 category_id: r.categoryId || null,
                 assigned_member_id: r.memberId || null,
                 notes: r.notes || null,
@@ -650,14 +812,13 @@ export default function ImportCsvPage() {
           amount: r.amount,
           description: r.description,
           merchant: r.merchant || null,
-          occurred_on: normalizeDate(r.date),
+          occurred_on: wallClockToUTC(normalizeDateTime(r.date)),
           category_id: r.categoryId || null,
           assigned_member_id: r.memberId || null,
           notes: r.notes || null,
-          // Use the selected origin (bank/general) as the source so bank
-          // documents are always stored as "bank". We no longer fall back to
-          // "csv" when no entry-ref column is mapped.
-          source: origin,
+          // This insert path only runs for bank imports (directos take the
+          // early-return branch above), so the source is always "bank".
+          source: "bank",
           entry_ref: r.entryRef || null,
           value_date: r.valueDate || null,
           balance: r.balance ?? null,
@@ -676,6 +837,23 @@ export default function ImportCsvPage() {
         if (insertError) throw insertError;
       }
 
+      // Refresh the bank fields of movements that already exist (matched by
+      // source + entry_ref) and changed in the file. Classification is left
+      // untouched. Flagged during dedup in buildRowsAndSuggest.
+      const toRefresh = rows.filter((r) => r.existingId);
+      if (toRefresh.length) {
+        const results = await Promise.all(
+          toRefresh.map((r) =>
+            supabase
+              .from("transactions")
+              .update(bankUpdatePayload(r))
+              .eq("id", r.existingId!)
+          )
+        );
+        const refreshError = results.find((res) => res.error)?.error;
+        if (refreshError) throw refreshError;
+      }
+
       const { error: logError } = await supabase.from("csv_imports").insert({
         filename: fileName,
         imported_by: user?.email,
@@ -685,14 +863,22 @@ export default function ImportCsvPage() {
       // importación ya realizada, solo lo dejamos en consola.
       if (logError) console.error("No se pudo registrar el import:", logError);
 
-      const skippedNote = duplicateCount ? ` (${duplicateCount} duplicado(s) ignorados)` : "";
-      toast.success(
+      const ignored = duplicateCount - toRefresh.length;
+      const skippedNote = ignored > 0 ? ` (${ignored} duplicado(s) ignorados)` : "";
+      const refreshNote = toRefresh.length
+        ? ` ${toRefresh.length} movimiento(s) ya existentes se actualizaron.`
+        : "";
+      const baseMessage =
         toUpdate.length && toInsert.length
           ? `${toInsert.length} movimiento(s) añadidos y ${toUpdate.length} actualizados.`
           : toUpdate.length
           ? `${toUpdate.length} movimiento(s) actualizados.`
-          : `${toInsert.length} movimiento(s) importados.${skippedNote}`
-      );
+          : toInsert.length
+          ? `${toInsert.length} movimiento(s) importados.${skippedNote}`
+          : toRefresh.length
+          ? "No había movimientos nuevos que importar."
+          : `0 movimiento(s) importados.${skippedNote}`;
+      toast.success(`${baseMessage}${refreshNote}`);
 
       setStep("upload");
       setRawRows([]);
@@ -719,6 +905,10 @@ export default function ImportCsvPage() {
   const insertCount = includedCount - updateCount;
   const duplicateCount = rows.filter((r) => r.duplicate).length;
   const invalidCount = rows.filter((r) => r.dateInvalid).length;
+  // Existing rows whose bank fields will be refreshed on confirm.
+  const refreshCount = rows.filter((r) => r.existingId).length;
+  // Duplicates that are neither inserted nor refreshed (truly skipped).
+  const ignoredCount = duplicateCount - refreshCount;
   // Show the status column whenever a row can carry a state badge
   // (update/dedup modes) or when exact duplicates / invalid dates were detected.
   const showStatus =
@@ -728,7 +918,7 @@ export default function ImportCsvPage() {
     <div className="max-w-3xl space-y-6">
       <PageHeader
         title="Importar movimientos"
-        description="Sube movimientos del banco o generales (CSV o Excel). Los que ya existan según su nº de apunte se ignoran automáticamente. También puedes volver a subir un archivo exportado desde Movimientos para actualizarlos."
+        description="Sube el extracto del banco o un archivo de directos (CSV o Excel). Los movimientos del banco que ya existan según su nº de apunte se ignoran o actualizan automáticamente."
       />
 
       {step === "upload" && (
@@ -751,19 +941,20 @@ export default function ImportCsvPage() {
               </button>
               <button
                 type="button"
-                onClick={() => setOrigin("general")}
+                onClick={() => setOrigin("directo")}
                 className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium ${
-                  origin === "general"
+                  origin === "directo"
                     ? "border-slate-900 bg-slate-50 text-slate-900"
                     : "border-slate-200 bg-white text-slate-500"
                 }`}
               >
-                Movimientos generales
+                Directos
               </button>
             </div>
             <p className="text-xs text-slate-500">
-              Los movimientos cuyo nº de apunte ya exista en este origen se
-              ignorarán automáticamente.
+              {isDirecto
+                ? "Cada fila se registra como un directo: un gasto del bote y la atribución de quien lo pagó."
+                : "Los movimientos cuyo nº de apunte ya exista en este origen se ignorarán automáticamente."}
             </p>
           </div>
 
@@ -809,15 +1000,16 @@ export default function ImportCsvPage() {
             </div>
           )}
 
-          {origin === "general" && (
-            <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-700">
+          {origin === "directo" && (
+            <div className="space-y-2 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900">
               <p className="flex items-center gap-2 font-medium">
                 <InfoIcon className="size-4 shrink-0" />
-                Formato de los movimientos generales
+                Formato de los directos
               </p>
               <p>
-                Son movimientos que no vienen del banco. Descarga la plantilla,
-                rellena una fila por movimiento y súbela (CSV o Excel). Columnas:
+                Movimientos que alguien pagó de su bolsillo. Por cada fila se
+                crean <strong>dos apuntes</strong>: el gasto del bote común y la
+                atribución de quien lo pagó. Columnas:
               </p>
               <ul className="ml-1 space-y-0.5">
                 <li>
@@ -825,41 +1017,33 @@ export default function ImportCsvPage() {
                   la fecha de hoy y se anota en las observaciones.
                 </li>
                 <li>
-                  · <strong>Descripción</strong> — de qué se trata el
-                  movimiento.
+                  · <strong>Descripción</strong> — de qué se trata el gasto.
                 </li>
                 <li>
                   · <strong>Comercio / origen</strong> — opcional.
                 </li>
                 <li>
-                  · <strong>Importe</strong> — negativo para gastos, positivo
-                  para ingresos.
+                  · <strong>Importe</strong> — el importe del gasto (en negativo).
                 </li>
                 <li>
-                  · <strong>Categoría</strong> — opcional; debe coincidir con
-                  una categoría existente.
+                  · <strong>Categoría</strong> — opcional; del gasto.
                 </li>
                 <li>
-                  · <strong>Persona</strong> — opcional; debe coincidir con un
-                  miembro existente.
+                  · <strong>Persona</strong> — quién lo pagó. Debe coincidir con
+                  un miembro existente; si no, la atribución queda sin persona.
                 </li>
                 <li>
-                  · <strong>Nº Apunte</strong> — opcional; referencia única para
-                  no importar dos veces el mismo movimiento.
-                </li>
-                <li>
-                  · <strong>Observaciones</strong> — opcional; notas libres del
-                  movimiento.
+                  · <strong>Observaciones</strong> — opcional.
                 </li>
               </ul>
-              <p className="text-slate-500">
-                La plantilla incluye una fila de ejemplo: bórrala o sustitúyela
-                por tus datos.
+              <p className="text-amber-700">
+                No hay deduplicación: si subes el mismo archivo dos veces, los
+                directos se duplicarán.
               </p>
               <button
                 type="button"
-                onClick={downloadGeneralTemplate}
-                className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                onClick={downloadDirectoTemplate}
+                className="inline-flex items-center gap-2 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-800 hover:bg-amber-100"
               >
                 <DownloadIcon className="size-3.5" />
                 Descargar plantilla
@@ -947,12 +1131,11 @@ export default function ImportCsvPage() {
             <p className="text-xs text-slate-500">
               Origen:{" "}
               <strong className="text-slate-700">
-                {origin === "bank"
-                  ? "Movimientos del banco"
-                  : "Movimientos generales"}
+                {origin === "bank" ? "Movimientos del banco" : "Directos"}
               </strong>
-              . Los movimientos cuyo nº de apunte ya exista en este origen se
-              ignorarán automáticamente.
+              {isDirecto
+                ? ". Cada fila creará un gasto del bote y la atribución de quien lo pagó."
+                : ". Los movimientos cuyo nº de apunte ya exista en este origen se ignorarán automáticamente."}
             </p>
           )}
           <div className="grid grid-cols-3 gap-3">
@@ -1093,12 +1276,40 @@ export default function ImportCsvPage() {
 
       {step === "review" && (
         <div className="space-y-4">
+          {isDirecto && (
+            <p className="flex items-start gap-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              <InfoIcon className="mt-0.5 size-4 shrink-0" />
+              <span>
+                Cada fila creará <strong>dos apuntes</strong>: el gasto del bote y
+                la atribución de quien lo pagó.
+                <span className="block text-xs text-amber-700">
+                  La persona debe coincidir con un miembro; si no, la atribución
+                  queda sin persona. No hay deduplicación.
+                </span>
+              </span>
+            </p>
+          )}
           {isDedupMode && (
             <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">
-              Origen: <strong>{origin === "bank" ? "Movimientos del banco" : "Movimientos generales"}</strong>.
-              {duplicateCount > 0
-                ? ` ${duplicateCount} movimiento(s) ya existentes se ignorarán.`
-                : " No se han encontrado duplicados."}
+              Origen: <strong>Movimientos del banco</strong>.
+              {ignoredCount > 0
+                ? ` ${ignoredCount} movimiento(s) ya existentes sin cambios se ignorarán.`
+                : duplicateCount === 0
+                ? " No se han encontrado duplicados."
+                : ""}
+            </p>
+          )}
+          {refreshCount > 0 && (
+            <p className="flex items-start gap-2 rounded-lg bg-blue-50 px-3 py-2 text-sm text-blue-800">
+              <InfoIcon className="mt-0.5 size-4 shrink-0" />
+              <span>
+                {refreshCount} movimiento(s) ya existentes se actualizarán con los
+                datos del archivo (fecha/hora, importe, descripción, comercio,
+                fecha valor y saldo).
+                <span className="block text-xs text-blue-700">
+                  La categoría, la persona y las observaciones se mantienen.
+                </span>
+              </span>
             </p>
           )}
           {!isDedupMode && duplicateCount > 0 && (
@@ -1240,17 +1451,21 @@ export default function ImportCsvPage() {
           </div>
           <button
             onClick={confirmImport}
-            disabled={saving || includedCount === 0}
+            disabled={saving || (includedCount === 0 && refreshCount === 0)}
             className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
           >
             {saving
               ? "Guardando..."
+              : isDirecto
+              ? `Importar ${includedCount} directo(s) (${includedCount * 2} apuntes)`
               : isUpdateMode
               ? `Guardar (${insertCount} nuevos, ${updateCount} actualizados)`
+              : includedCount === 0 && refreshCount > 0
+              ? `Actualizar ${refreshCount} movimiento(s)`
               : isDedupMode
               ? `Importar ${includedCount} nuevos${
-                  duplicateCount ? ` (${duplicateCount} ignorados)` : ""
-                }`
+                  refreshCount ? ` + actualizar ${refreshCount}` : ""
+                }${ignoredCount > 0 ? ` (${ignoredCount} ignorados)` : ""}`
               : `Importar ${includedCount} movimientos${
                   duplicateCount ? ` (${duplicateCount} ya existentes ignorados)` : ""
                 }`}
@@ -1273,4 +1488,19 @@ function normalizeDate(d: string): string {
     return `${yyyy}-${mm.padStart(2, "0")}-${dd.padStart(2, "0")}`;
   }
   return "";
+}
+
+// Like normalizeDate but keeps the time of day when the cell has one, so the
+// bank's movement time ("Fecha de la operación") is preserved. Returns
+// "YYYY-MM-DDTHH:MM:SS" when a time is present, "YYYY-MM-DD" otherwise, and ""
+// when the date can't be parsed.
+function normalizeDateTime(d: string): string {
+  const date = normalizeDate(d);
+  if (!date) return "";
+  const t = d.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (!t) return date;
+  const hh = t[1].padStart(2, "0");
+  const mm = t[2];
+  const ss = (t[3] ?? "00").padStart(2, "0");
+  return `${date}T${hh}:${mm}:${ss}`;
 }

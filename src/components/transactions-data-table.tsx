@@ -14,11 +14,15 @@ import {
   type SortingState,
 } from "@tanstack/react-table"
 
+import { type DateRange } from "react-day-picker"
+import { es } from "date-fns/locale"
+
 import { createClient } from "@/lib/supabase/client"
 import { ADMIN_EMAIL } from "@/lib/admin"
 import type { Category, Member, Transaction } from "@/lib/types"
 import { EditTransactionSheet } from "@/components/edit-transaction-sheet"
 import { Badge } from "@/components/ui/badge"
+import { Calendar } from "@/components/ui/calendar"
 import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
@@ -33,7 +37,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover"
 import { MultiSelectFilter } from "@/components/multi-select-filter"
-import { cn } from "@/lib/utils"
+import { cn, formatOccurred } from "@/lib/utils"
 import {
   Select,
   SelectContent,
@@ -57,6 +61,7 @@ import {
   ChevronsLeftIcon,
   ChevronsRightIcon,
   EllipsisVerticalIcon,
+  EyeIcon,
   FunnelIcon,
   XIcon,
 } from "lucide-react"
@@ -104,6 +109,24 @@ function buildGroupedRows(rows: Transaction[]): Row[] {
   return result
 }
 
+// Parse a "YYYY-MM-DD" string into a local Date, avoiding the UTC shift that
+// `new Date("YYYY-MM-DD")` would introduce.
+function parseISODate(s: string): Date | undefined {
+  if (!s) return undefined
+  const [y, m, d] = s.split("-").map(Number)
+  if (!y || !m || !d) return undefined
+  return new Date(y, m - 1, d)
+}
+
+// Format a Date into a "YYYY-MM-DD" string using its local components, matching
+// the format stored in the URL and used for the day-string comparison filter.
+function toISODate(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
+}
+
 // Accent- and case-insensitive text, used by the description column filter.
 function normalizeText(s: string): string {
   return s
@@ -121,6 +144,13 @@ const SOURCE_LABELS: Record<Transaction["source"], string> = {
 }
 
 const SOURCE_OPTIONS = Object.keys(SOURCE_LABELS) as Transaction["source"][]
+
+// Per-origin badge styling. Bank and manual (directos) use two contrasting
+// shades of grey; the rest keep the neutral outline look.
+const SOURCE_BADGE_CLASS: Partial<Record<Transaction["source"], string>> = {
+  bank: "border-transparent bg-slate-700 text-white",
+  manual: "border-slate-300 bg-slate-100 text-slate-700",
+}
 
 const PER_PAGE_STORAGE_KEY = "transactions-per-page"
 const PER_PAGE_QUERY_PARAM = "perPage"
@@ -373,7 +403,7 @@ export function TransactionsDataTable({
       if (
         !groupId ||
         !confirm(
-          "Este movimiento es un pago directo (gasto + aportación). Se eliminarán los dos apuntes. ¿Continuar?"
+          "Este movimiento es un pago directo (gasto + atribución). Se eliminarán los dos apuntes. ¿Continuar?"
         )
       )
         return
@@ -436,6 +466,13 @@ export function TransactionsDataTable({
     [filteredData]
   )
 
+  // Only offer origins actually present in the data, in the canonical order, so
+  // the filter doesn't list sources that are never used (e.g. legacy csv/general).
+  const availableSources = React.useMemo(() => {
+    const present = new Set(data.map((t) => t.source))
+    return SOURCE_OPTIONS.filter((s) => present.has(s))
+  }, [data])
+
   const columns = React.useMemo<ColumnDef<Transaction>[]>(
     () => [
       {
@@ -473,8 +510,7 @@ export function TransactionsDataTable({
             <ArrowUpDownIcon className="ml-1 size-3.5" />
           </Button>
         ),
-        cell: ({ row }) =>
-          new Date(row.original.occurred_on).toLocaleDateString("es-ES"),
+        cell: ({ row }) => formatOccurred(row.original.occurred_on),
       },
       {
         id: "descripcion",
@@ -552,7 +588,12 @@ export function TransactionsDataTable({
         id: "fuente",
         header: "Origen",
         cell: ({ row }) => (
-          <Badge variant="outline">{SOURCE_LABELS[row.original.source]}</Badge>
+          <Badge
+            variant="outline"
+            className={SOURCE_BADGE_CLASS[row.original.source]}
+          >
+            {SOURCE_LABELS[row.original.source]}
+          </Badge>
         ),
       },
       {
@@ -582,7 +623,17 @@ export function TransactionsDataTable({
         id: "actions",
         header: () => <span className="sr-only">Acciones</span>,
         cell: ({ row }) => (
-          <DropdownMenu>
+          <div className="flex items-center justify-end gap-1">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-8"
+              onClick={() => handleView(row.original as Row)}
+            >
+              <EyeIcon />
+              <span className="sr-only">Ver detalles</span>
+            </Button>
+            <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon" className="size-8">
                 <EllipsisVerticalIcon />
@@ -590,9 +641,6 @@ export function TransactionsDataTable({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => handleView(row.original as Row)}>
-                Ver detalles
-              </DropdownMenuItem>
               {isAdmin && (
                 <DropdownMenuItem onClick={() => handleEdit(row.original as Row)}>
                   Editar
@@ -608,6 +656,7 @@ export function TransactionsDataTable({
               )}
             </DropdownMenuContent>
           </DropdownMenu>
+          </div>
         ),
       } as ColumnDef<Transaction>,
     ],
@@ -663,29 +712,28 @@ export function TransactionsDataTable({
   // categorical columns, text for description, and range inputs for date/amount.
   function renderFilterPanel(columnId: string): React.ReactNode {
     switch (columnId) {
-      case "occurred_on":
+      case "occurred_on": {
+        const range: DateRange | undefined =
+          dateFrom || dateTo
+            ? { from: parseISODate(dateFrom), to: parseISODate(dateTo) }
+            : undefined
         return (
           <div className="space-y-2">
             <p className="text-xs font-medium text-muted-foreground">
               Rango de fechas
             </p>
-            <div className="flex items-center gap-2">
-              <Input
-                type="date"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-                aria-label="Fecha desde"
-                className="h-8 text-xs"
-              />
-              <span className="text-xs text-muted-foreground">a</span>
-              <Input
-                type="date"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
-                aria-label="Fecha hasta"
-                className="h-8 text-xs"
-              />
-            </div>
+            <Calendar
+              mode="range"
+              numberOfMonths={2}
+              defaultMonth={range?.from}
+              selected={range}
+              onSelect={(next) => {
+                setDateFrom(next?.from ? toISODate(next.from) : "")
+                setDateTo(next?.to ? toISODate(next.to) : "")
+              }}
+              locale={es}
+              autoFocus
+            />
             <div className="flex justify-end border-t pt-2">
               <Button
                 variant="ghost"
@@ -702,6 +750,7 @@ export function TransactionsDataTable({
             </div>
           </div>
         )
+      }
       case "descripcion":
         return (
           <div className="space-y-2">
@@ -759,7 +808,7 @@ export function TransactionsDataTable({
       case "fuente":
         return (
           <MultiSelectFilter
-            options={SOURCE_OPTIONS.map((s) => ({
+            options={availableSources.map((s) => ({
               value: s,
               label: SOURCE_LABELS[s],
             }))}
@@ -840,7 +889,10 @@ export function TransactionsDataTable({
             <FunnelIcon className={cn("size-3.5", active && "fill-current")} />
           </Button>
         </PopoverTrigger>
-        <PopoverContent align="start" className="w-64">
+        <PopoverContent
+          align="start"
+          className={columnId === "occurred_on" ? "w-auto" : "w-64"}
+        >
           {panel}
         </PopoverContent>
       </Popover>
@@ -881,20 +933,7 @@ export function TransactionsDataTable({
                 const pair = (row.original as Row)._pair
                 return (
                   <React.Fragment key={row.id}>
-                    <TableRow
-                      className="cursor-pointer"
-                      onClick={(e) => {
-                        // Ignore clicks on interactive controls inside the row
-                        // (expander, actions menu, inline assign selects, links).
-                        if (
-                          (e.target as HTMLElement).closest(
-                            'button, a, input, select, [role="combobox"]'
-                          )
-                        )
-                          return
-                        handleView(row.original as Row)
-                      }}
-                    >
+                    <TableRow>
                       {row.getVisibleCells().map((cell) => (
                         <TableCell key={cell.id}>
                           {flexRender(cell.column.columnDef.cell, cell.getContext())}
@@ -915,7 +954,7 @@ export function TransactionsDataTable({
                             </div>
                             <div className="flex items-center justify-between gap-4">
                               <span className="text-muted-foreground">
-                                Aportación ·{" "}
+                                Atribución ·{" "}
                                 {pair.payer?.name || pair.payer?.email || "sin persona"}
                               </span>
                               <span className="font-medium text-emerald-600">

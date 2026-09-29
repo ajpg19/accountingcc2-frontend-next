@@ -3,6 +3,7 @@ import { createClient } from "@/lib/supabase/server"
 import { SectionCards } from "@/components/section-cards"
 import { ChartAreaInteractive, type DailyPoint } from "@/components/chart-area-interactive"
 import { Button } from "@/components/ui/button"
+import { formatOccurred } from "@/lib/utils"
 import type { Transaction } from "@/lib/types"
 
 function formatMoney(n: number, currency = "EUR") {
@@ -95,7 +96,7 @@ export default async function DashboardPage() {
               {rows.slice(0, 5).map((t) => (
                 <tr key={t.id} className="border-b last:border-0">
                   <td className="px-5 py-2 text-muted-foreground">
-                    {new Date(t.occurred_on).toLocaleDateString("es-ES")}
+                    {formatOccurred(t.occurred_on)}
                   </td>
                   <td className="px-5 py-2">{t.description || t.merchant || "—"}</td>
                   <td className="px-5 py-2">

@@ -21,6 +21,7 @@ import {
   HistoryIcon,
   HomeIcon,
   TagsIcon,
+  BarChart3Icon,
 } from "lucide-react"
 
 const data = {
@@ -34,6 +35,11 @@ const data = {
       title: "Movimientos",
       url: "/transactions",
       icon: <ListIcon />,
+    },
+    {
+      title: "Reportes",
+      url: "/transactions/reportes",
+      icon: <BarChart3Icon />,
     },
     {
       title: "Historial",

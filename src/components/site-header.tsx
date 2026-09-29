@@ -7,10 +7,10 @@ import { SidebarTrigger } from "@/components/ui/sidebar"
 const TITLES: Record<string, string> = {
   "/dashboard": "Dashboard",
   "/transactions": "Movimientos",
-  "/transactions/new": "Nuevo movimiento",
   "/transactions/directo": "Nuevo directo",
   "/transactions/import": "Importar movimientos",
   "/transactions/historial": "Historial de movimientos",
+  "/transactions/reportes": "Reportes",
   "/nomenclatures": "Nomencladores",
   "/nomenclatures/categories": "Nomencladores · Categorías",
   "/nomenclatures/members": "Nomencladores · Miembros",
