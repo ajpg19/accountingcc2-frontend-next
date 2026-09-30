@@ -5,7 +5,15 @@ import { DownloadIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { Transaction } from "@/lib/types";
 
-export function ExportTransactionsButton({ data }: { data: Transaction[] }) {
+export function ExportTransactionsButton({
+  data,
+  selectedCount = 0,
+}: {
+  data: Transaction[];
+  // Number of rows explicitly selected in the table. When > 0 the button label
+  // reflects the selection instead of the generic "download all" wording.
+  selectedCount?: number;
+}) {
   function handleExport() {
     const rows = data.map((t) => ({
       ID: t.id,
@@ -44,10 +52,22 @@ export function ExportTransactionsButton({ data }: { data: Transaction[] }) {
     XLSX.writeFile(wb, `movimientos-${today}.xlsx`);
   }
 
+  const label =
+    selectedCount > 0
+      ? `Descargar ${selectedCount} movimiento${selectedCount === 1 ? "" : "s"}`
+      : "Descargar movimientos";
+
   return (
-    <Button variant="outline" size="sm" onClick={handleExport} disabled={data.length === 0}>
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={handleExport}
+      disabled={data.length === 0}
+      aria-label={label}
+    >
       <DownloadIcon />
-      Descargar movimientos
+      {/* Icon-only on mobile; label shows from the sm breakpoint up. */}
+      <span className="hidden sm:inline">{label}</span>
     </Button>
   );
 }

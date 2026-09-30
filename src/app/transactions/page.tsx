@@ -3,7 +3,14 @@ import Link from "next/link"
 import { UploadIcon } from "lucide-react"
 import { createClient } from "@/lib/supabase/server"
 import { TransactionsDataTable } from "@/components/transactions-data-table"
-import { ExportTransactionsButton } from "@/components/export-transactions-button"
+import {
+  TransactionsExportButton,
+  TransactionsExportProvider,
+} from "@/components/transactions-export"
+import {
+  TransactionsViewSettingsButton,
+  TransactionsViewSettingsProvider,
+} from "@/components/transactions-view-settings"
 import { PageHeader } from "@/components/page-header"
 import { Button } from "@/components/ui/button"
 import { isAdminEmail } from "@/lib/admin"
@@ -38,31 +45,37 @@ export default async function TransactionsPage() {
   const rows = (transactions ?? []) as unknown as Transaction[]
 
   return (
-    <div className="space-y-4">
-      <PageHeader
-        title="Movimientos"
-        description="Consulta, filtra y gestiona todos los movimientos registrados."
-        actions={
-          <>
-            <ExportTransactionsButton data={rows} />
-            {isAdmin && (
-              <Button asChild variant="outline" size="sm">
-                <Link href="/transactions/import">
-                  <UploadIcon />
-                  Importar movimientos
-                </Link>
-              </Button>
-            )}
-          </>
-        }
-      />
-      <Suspense fallback={null}>
-        <TransactionsDataTable
-          data={rows}
-          categories={(categories ?? []) as Category[]}
-          members={(members ?? []) as Member[]}
-        />
-      </Suspense>
-    </div>
+    <TransactionsViewSettingsProvider>
+      <TransactionsExportProvider initialData={rows}>
+        <div className="space-y-4">
+          <PageHeader
+            title="Movimientos"
+            description="Consulta, filtra y gestiona todos los movimientos registrados."
+            actions={
+              <>
+                <TransactionsExportButton />
+                {isAdmin && (
+                  <Button asChild variant="outline" size="sm">
+                    <Link href="/transactions/import" aria-label="Importar movimientos">
+                      <UploadIcon />
+                      {/* Icon-only on mobile; label shows from the sm breakpoint up. */}
+                      <span className="hidden sm:inline">Importar movimientos</span>
+                    </Link>
+                  </Button>
+                )}
+                <TransactionsViewSettingsButton />
+              </>
+            }
+          />
+          <Suspense fallback={null}>
+            <TransactionsDataTable
+              data={rows}
+              categories={(categories ?? []) as Category[]}
+              members={(members ?? []) as Member[]}
+            />
+          </Suspense>
+        </div>
+      </TransactionsExportProvider>
+    </TransactionsViewSettingsProvider>
   )
 }

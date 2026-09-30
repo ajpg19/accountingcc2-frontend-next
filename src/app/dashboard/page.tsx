@@ -10,51 +10,72 @@ function formatMoney(n: number, currency = "EUR") {
   return new Intl.NumberFormat("es-ES", { style: "currency", currency }).format(n)
 }
 
+// Wall-clock day in UTC as YYYY-MM-DD (matches how the DB views group dates).
+function utcDay(d: Date): string {
+  return d.toISOString().slice(0, 10)
+}
+
 export default async function DashboardPage() {
   const supabase = await createClient()
 
-  const { data, error } = await supabase
-    .from("transactions")
-    .select("*, categories(id, name, color), members(id, name, color)")
-    .order("occurred_on", { ascending: false })
-    .order("created_at", { ascending: false })
-    .limit(200)
-
-  if (error) console.error("Error cargando transacciones:", error)
-
-  const rows = (data ?? []) as unknown as Transaction[]
-
   const now = new Date()
-  const thisMonth = rows.filter((t) => {
-    const d = new Date(t.occurred_on)
-    return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear()
-  })
+  // First day of the current month (UTC), matching transaction_monthly_totals.
+  const monthStart = utcDay(
+    new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)),
+  )
+  // Window start for the 90-day series (inclusive of today → 90 points).
+  const windowStart = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+  )
+  windowStart.setUTCDate(windowStart.getUTCDate() - 89)
 
-  const gastosMes = thisMonth
-    .filter((t) => t.type === "expense")
-    .reduce((s, t) => s + Number(t.amount), 0)
-  const ingresosMes = thisMonth
-    .filter((t) => t.type === "income")
-    .reduce((s, t) => s + Number(t.amount), 0)
+  // Everything is pre-aggregated in the DB (views 0016), so these are small,
+  // indexed reads instead of pulling raw transactions and summing in JS.
+  const [monthRes, dailyRes, countRes, latestRes] = await Promise.all([
+    supabase
+      .from("transaction_monthly_totals")
+      .select("gastos, ingresos")
+      .eq("month", monthStart)
+      .maybeSingle(),
+    supabase
+      .from("transaction_daily_totals")
+      .select("day, gastos, ingresos")
+      .gte("day", utcDay(windowStart))
+      .order("day", { ascending: true }),
+    supabase
+      .from("transactions")
+      .select("*", { count: "exact", head: true }),
+    supabase
+      .from("transactions")
+      .select("*, categories(id, name, color), members(id, name, color)")
+      .order("occurred_on", { ascending: false })
+      .order("created_at", { ascending: false })
+      .limit(5),
+  ])
 
-  // Serie diaria de los últimos 90 días para el gráfico
-  const dailyMap = new Map<string, { gastos: number; ingresos: number }>()
-  const start = new Date()
-  start.setDate(start.getDate() - 90)
-  for (let d = new Date(start); d <= now; d.setDate(d.getDate() + 1)) {
-    dailyMap.set(d.toISOString().slice(0, 10), { gastos: 0, ingresos: 0 })
+  if (monthRes.error) console.error("Error cargando totales del mes:", monthRes.error)
+  if (dailyRes.error) console.error("Error cargando serie diaria:", dailyRes.error)
+  if (countRes.error) console.error("Error contando movimientos:", countRes.error)
+  if (latestRes.error) console.error("Error cargando últimos movimientos:", latestRes.error)
+
+  const gastosMes = Number(monthRes.data?.gastos ?? 0)
+  const ingresosMes = Number(monthRes.data?.ingresos ?? 0)
+  const numMovimientos = countRes.count ?? 0
+  const rows = (latestRes.data ?? []) as unknown as Transaction[]
+
+  // Fill zero-gaps so the area chart is continuous across the 90-day window.
+  const dailyByDay = new Map(
+    (dailyRes.data ?? []).map((r) => [
+      r.day as string,
+      { gastos: Number(r.gastos), ingresos: Number(r.ingresos) },
+    ]),
+  )
+  const dailySeries: DailyPoint[] = []
+  for (let d = new Date(windowStart); d <= now; d.setUTCDate(d.getUTCDate() + 1)) {
+    const key = utcDay(d)
+    const v = dailyByDay.get(key) ?? { gastos: 0, ingresos: 0 }
+    dailySeries.push({ date: key, ...v })
   }
-  for (const t of rows) {
-    const key = t.occurred_on.slice(0, 10)
-    const entry = dailyMap.get(key)
-    if (entry) {
-      if (t.type === "expense") entry.gastos += Number(t.amount)
-      else entry.ingresos += Number(t.amount)
-    }
-  }
-  const dailySeries: DailyPoint[] = Array.from(dailyMap.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, v]) => ({ date, ...v }))
 
   return (
     <div className="space-y-6">
@@ -62,7 +83,7 @@ export default async function DashboardPage() {
         gastosMes={gastosMes}
         ingresosMes={ingresosMes}
         balanceMes={ingresosMes - gastosMes}
-        numMovimientos={rows.length}
+        numMovimientos={numMovimientos}
       />
 
       <ChartAreaInteractive data={dailySeries} />

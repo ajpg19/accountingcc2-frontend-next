@@ -11,6 +11,7 @@ import {
   useReactTable,
   type ColumnDef,
   type ExpandedState,
+  type RowSelectionState,
   type SortingState,
 } from "@tanstack/react-table"
 
@@ -21,7 +22,10 @@ import { createClient } from "@/lib/supabase/client"
 import { ADMIN_EMAIL } from "@/lib/admin"
 import type { Category, Member, Transaction } from "@/lib/types"
 import { EditTransactionSheet } from "@/components/edit-transaction-sheet"
+import { useTransactionsExport } from "@/components/transactions-export"
+import { useTransactionsViewSettings } from "@/components/transactions-view-settings"
 import { Badge } from "@/components/ui/badge"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Calendar } from "@/components/ui/calendar"
 import { Button } from "@/components/ui/button"
 import {
@@ -197,6 +201,7 @@ export function TransactionsDataTable({
 }) {
   const searchParams = useSearchParams()
   const router = useRouter()
+  const { settings } = useTransactionsViewSettings()
 
   const [data, setData] = React.useState(initialData)
   // Initialize every per-column filter, sort and pagination value from the URL
@@ -234,6 +239,7 @@ export function TransactionsDataTable({
   const [editingSibling, setEditingSibling] = React.useState<Transaction | null>(null)
   const [editOpen, setEditOpen] = React.useState(false)
   const [expanded, setExpanded] = React.useState<ExpandedState>({})
+  const [rowSelection, setRowSelection] = React.useState<RowSelectionState>({})
   const [isAdmin, setIsAdmin] = React.useState(false)
   const [perPage, setPerPage] = React.useState<PerPageOption>(() => {
     const fromQuery = searchParams.get(PER_PAGE_QUERY_PARAM)
@@ -301,6 +307,9 @@ export function TransactionsDataTable({
       return
     }
     setPageIndex(0)
+    // Clear the selection: rows selected under the previous filter may no longer
+    // be visible, and the export button should reflect the new result set.
+    setRowSelection({})
   }, [
     descFilter,
     categoryFilter,
@@ -461,9 +470,11 @@ export function TransactionsDataTable({
   ])
 
   // Collapse direct-payment pairs after filtering, so a pair counts as one row.
+  // When the user turns grouping off, each apunte is listed individually.
   const groupedData = React.useMemo(
-    () => buildGroupedRows(filteredData),
-    [filteredData]
+    () =>
+      settings.groupDirectos ? buildGroupedRows(filteredData) : filteredData,
+    [filteredData, settings.groupDirectos]
   )
 
   // Only offer origins actually present in the data, in the canonical order, so
@@ -475,6 +486,32 @@ export function TransactionsDataTable({
 
   const columns = React.useMemo<ColumnDef<Transaction>[]>(
     () => [
+      {
+        id: "select",
+        header: ({ table }) => (
+          <Checkbox
+            checked={
+              table.getIsAllRowsSelected()
+                ? true
+                : table.getIsSomeRowsSelected()
+                  ? "indeterminate"
+                  : false
+            }
+            onCheckedChange={(value) =>
+              table.toggleAllRowsSelected(!!value)
+            }
+            aria-label="Seleccionar todos"
+          />
+        ),
+        cell: ({ row }) => (
+          <Checkbox
+            checked={row.getIsSelected()}
+            onCheckedChange={(value) => row.toggleSelected(!!value)}
+            aria-label="Seleccionar fila"
+          />
+        ),
+        enableSorting: false,
+      },
       {
         id: "expander",
         header: () => null,
@@ -669,9 +706,19 @@ export function TransactionsDataTable({
   const table = useReactTable({
     data: groupedData,
     columns,
-    state: { sorting, pagination: { pageIndex, pageSize }, expanded },
+    state: {
+      sorting,
+      pagination: { pageIndex, pageSize },
+      expanded,
+      rowSelection,
+    },
+    // Key rows by transaction id so the selection survives sorting/pagination
+    // and doesn't latch onto the wrong row when the list changes.
+    getRowId: (row) => row.id,
     onSortingChange: setSorting,
     onExpandedChange: setExpanded,
+    onRowSelectionChange: setRowSelection,
+    enableRowSelection: true,
     getRowCanExpand: (row) => Boolean((row.original as Row)._pair),
     onPaginationChange: (updater) => {
       const next =
@@ -685,6 +732,26 @@ export function TransactionsDataTable({
     getExpandedRowModel: getExpandedRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
   })
+
+  // Rows to hand to the export button: the explicit selection when there is one,
+  // otherwise every row matching the current filters. A selected direct-payment
+  // pair expands back into its two underlying movements so the export stays a
+  // faithful list of apuntes.
+  const selectedRows = table.getSelectedRowModel().rows
+  const selectedCount = selectedRows.length
+  const exportData = React.useMemo<Transaction[]>(() => {
+    if (selectedRows.length === 0) return filteredData
+    return selectedRows.flatMap((r) => {
+      const pair = (r.original as Row)._pair
+      return pair ? [pair.expense, pair.income] : [r.original]
+    })
+  }, [selectedRows, filteredData])
+
+  // Publish the export data to the header button, which lives outside the table.
+  const { setExportState } = useTransactionsExport()
+  React.useEffect(() => {
+    setExportState({ data: exportData, selectedCount })
+  }, [exportData, selectedCount, setExportState])
 
   // Whether a given column currently has an active filter (drives the funnel
   // icon's highlighted state).
@@ -982,7 +1049,9 @@ export function TransactionsDataTable({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-3">
           <span className="text-sm text-muted-foreground">
-            {filteredData.length} movimiento(s)
+            {selectedCount > 0
+              ? `${selectedCount} seleccionado(s) de ${filteredData.length}`
+              : `${filteredData.length} movimiento(s)`}
           </span>
           {hasActiveFilters && (
             <Button

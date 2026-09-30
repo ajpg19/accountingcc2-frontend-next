@@ -68,11 +68,22 @@ export function MultiSelectFilter({
           </p>
         ) : (
           filtered.map((o) => (
-            <button
+            // The row is a div, not a button: the Radix Checkbox renders its own
+            // <button>, and a button can't be nested inside another button
+            // (invalid HTML → hydration error). role/tabIndex/keyboard handling
+            // keep it operable like a button.
+            <div
               key={o.value}
-              type="button"
+              role="button"
+              tabIndex={0}
               onClick={() => toggle(o.value)}
-              className="flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-sm hover:bg-accent"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault()
+                  toggle(o.value)
+                }
+              }}
+              className="flex w-full cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-left text-sm hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
             >
               <Checkbox
                 checked={selected.includes(o.value)}
@@ -85,7 +96,7 @@ export function MultiSelectFilter({
                 />
               )}
               <span className="truncate">{o.label}</span>
-            </button>
+            </div>
           ))
         )}
       </div>
